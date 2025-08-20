@@ -1,0 +1,9 @@
+__pycache__/
+.history/
+data/
+datasets/
+docs/
+logs/
+log_module/
+outputs/
+*.txt
