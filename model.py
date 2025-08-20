@@ -341,9 +341,13 @@ class UIE_model(nn.Module):
         dec1 = self.decoder1(cat1)
         dec1 = self.refine(dec1)
         out = self.out_conv(dec1) + inp
+
+        # Add output clamping to prevent extreme values
+        out = torch.clamp(out, 0.0, 1.0)
+
         if gt is not None:
-            loss = self.loss_fn(out, gt)
-            return {"output": out, "loss": loss}
+            total_loss, loss_comps = self.loss_fn(out, gt)
+            return {"output": out, "loss": total_loss, "loss_comps": loss_comps}
         return {"output": out}
 
 

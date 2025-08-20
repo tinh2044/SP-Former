@@ -29,9 +29,8 @@ def train_one_epoch(
         outputs = model(inputs, targets)
 
         pred_l = outputs["output"]
-
-        loss_dict = outputs["loss"]
-        total_loss = loss_dict["total"]
+        total_loss = outputs["loss"]
+        loss_comps = outputs["loss_comps"]
 
         # Backward pass
         optimizer.zero_grad()
@@ -39,7 +38,8 @@ def train_one_epoch(
         optimizer.step()
 
         # Update metrics
-        for loss_name, loss_value in loss_dict.items():
+        metric_logger.update(total_loss=total_loss.item())
+        for loss_name, loss_value in loss_comps.items():
             metric_logger.update(**{f"{loss_name}_loss": loss_value.item()})
 
         # Save sample images
@@ -75,9 +75,8 @@ def evaluate_fn(
             # Forward pass
             outputs = model(inputs)
             pred_l = outputs["output"]
-            for loss_name, loss_value in outputs["loss"].items():
-                metric_logger.update(**{f"{loss_name}_loss": loss_value.item()})
 
+            # Compute metrics
             metrics = compute_metrics(targets, pred_l, args.device)
 
             for metric_name, metric_value in metrics.items():

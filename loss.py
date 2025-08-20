@@ -219,52 +219,82 @@ class UnderwaterLosses(nn.Module):
         """
         device = self.device
         hatJ = hatJ.to(device)
-        comps = {}
 
+        # Add safeguards to prevent NaN
+        hatJ = torch.clamp(hatJ, 0.0, 1.0)
         if J is not None:
             J = J.to(device)
+            J = torch.clamp(J, 0.0, 1.0)
+        if I is not None:
+            I = I.to(device)
+            I = torch.clamp(I, 0.0, 1.0)
+        if t is not None:
+            t = t.to(device)
+            t = torch.clamp(t, 0.01, 0.99)  # Avoid extreme values
+        if A is not None:
+            A = A.to(device)
+            A = torch.clamp(A, 0.0, 1.0)
+
+        comps = {}
+
+        # L1 Loss
+        if J is not None:
             l_l1 = F.l1_loss(hatJ, J, reduction="mean")
         else:
             l_l1 = torch.tensor(0.0, device=device)
         comps["l1"] = l_l1
 
+        # Perceptual Loss
         if (self.vgg is not None) and (J is not None):
-            feats_hat = self.vgg(hatJ)
-            feats_gt = self.vgg(J)
-            l_perc = 0.0
-            for fh, fg in zip(feats_hat, feats_gt):
-                l_perc = l_perc + F.mse_loss(fh, fg, reduction="mean")
-            comps["perc"] = l_perc
+            try:
+                feats_hat = self.vgg(hatJ)
+                feats_gt = self.vgg(J)
+                l_perc = 0.0
+                for fh, fg in zip(feats_hat, feats_gt):
+                    l_perc = l_perc + F.mse_loss(fh, fg, reduction="mean")
+                comps["perc"] = l_perc
+            except Exception as e:
+                print(f"Perceptual loss error: {e}")
+                comps["perc"] = torch.tensor(0.0, device=device)
         else:
             comps["perc"] = torch.tensor(0.0, device=device)
 
+        # MS-SSIM Loss
         if J is not None:
-            ms = ms_ssim(
-                hatJ,
-                J,
-                data_range=1.0,
-                window_size=self.ms_window_size,
-                window_sigma=self.ms_window_sigma,
-                levels=self.ms_levels,
-            )
-            l_ms = (1.0 - ms).mean()
-            comps["ms_ssim"] = l_ms
+            try:
+                ms = ms_ssim(
+                    hatJ,
+                    J,
+                    data_range=1.0,
+                    window_size=self.ms_window_size,
+                    window_sigma=self.ms_window_sigma,
+                    levels=self.ms_levels,
+                )
+                l_ms = (1.0 - ms).mean()
+                comps["ms_ssim"] = l_ms
+            except Exception as e:
+                print(f"MS-SSIM loss error: {e}")
+                comps["ms_ssim"] = torch.tensor(0.0, device=device)
         else:
             comps["ms_ssim"] = torch.tensor(0.0, device=device)
 
+        # Physics Loss
         if (I is not None) and (t is not None) and (A is not None):
-            I = I.to(device)
-            t = t.to(device)
-            A = A.to(device)
-            I_model = hatJ * t + A * (1.0 - t)
-            l_phys = F.l1_loss(I_model, I, reduction="mean")
-            comps["phys_rec"] = l_phys
-            if self.use_tv_on_t:
-                tv_t = self.total_variation(t)
-                tv_A = self.total_variation(A)
-                comps["tv_t"] = tv_t
-                comps["tv_A"] = tv_A
-            else:
+            try:
+                I_model = hatJ * t + A * (1.0 - t)
+                l_phys = F.l1_loss(I_model, I, reduction="mean")
+                comps["phys_rec"] = l_phys
+                if self.use_tv_on_t:
+                    tv_t = self.total_variation(t)
+                    tv_A = self.total_variation(A)
+                    comps["tv_t"] = tv_t
+                    comps["tv_A"] = tv_A
+                else:
+                    comps["tv_t"] = torch.tensor(0.0, device=device)
+                    comps["tv_A"] = torch.tensor(0.0, device=device)
+            except Exception as e:
+                print(f"Physics loss error: {e}")
+                comps["phys_rec"] = torch.tensor(0.0, device=device)
                 comps["tv_t"] = torch.tensor(0.0, device=device)
                 comps["tv_A"] = torch.tensor(0.0, device=device)
         else:
@@ -272,26 +302,38 @@ class UnderwaterLosses(nn.Module):
             comps["tv_t"] = torch.tensor(0.0, device=device)
             comps["tv_A"] = torch.tensor(0.0, device=device)
 
+        # Gradient Loss
         if J is not None:
+            try:
 
-            def grad_x(img):
-                return img[:, :, :, :-1] - img[:, :, :, 1:]
+                def grad_x(img):
+                    return img[:, :, :, :-1] - img[:, :, :, 1:]
 
-            def grad_y(img):
-                return img[:, :, :-1, :] - img[:, :, 1:, :]
+                def grad_y(img):
+                    return img[:, :, :-1, :] - img[:, :, 1:, :]
 
-            gx_hat = grad_x(hatJ)
-            gy_hat = grad_y(hatJ)
-            gx_gt = grad_x(J)
-            gy_gt = grad_y(J)
-            l_grad = (
-                F.l1_loss(gx_hat, gx_gt, reduction="mean")
-                + F.l1_loss(gy_hat, gy_gt, reduction="mean")
-            ) * 0.5
-            comps["grad"] = l_grad
+                gx_hat = grad_x(hatJ)
+                gy_hat = grad_y(hatJ)
+                gx_gt = grad_x(J)
+                gy_gt = grad_y(J)
+                l_grad = (
+                    F.l1_loss(gx_hat, gx_gt, reduction="mean")
+                    + F.l1_loss(gy_hat, gy_gt, reduction="mean")
+                ) * 0.5
+                comps["grad"] = l_grad
+            except Exception as e:
+                print(f"Gradient loss error: {e}")
+                comps["grad"] = torch.tensor(0.0, device=device)
         else:
             comps["grad"] = torch.tensor(0.0, device=device)
 
+        # Check for NaN and replace with zeros
+        for k, v in comps.items():
+            if isinstance(v, torch.Tensor) and torch.isnan(v):
+                print(f"NaN detected in {k}, replacing with 0")
+                comps[k] = torch.tensor(0.0, device=device)
+
+        # Compute total loss
         total = (
             self.weights["l1"] * comps["l1"]
             + self.weights["perc"] * comps["perc"]
@@ -304,8 +346,13 @@ class UnderwaterLosses(nn.Module):
                 comps["tv_t"] + comps["tv_A"]
             )
 
+        # Final NaN check
+        if torch.isnan(total):
+            print("Total loss is NaN, using L1 only")
+            total = self.weights["l1"] * comps["l1"]
+
         comps["total"] = total
-        return comps
+        return total, comps
 
     @staticmethod
     def total_variation(x):
