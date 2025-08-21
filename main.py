@@ -15,7 +15,7 @@ from loguru import logger
 
 from optimizer import build_optimizer, build_scheduler
 from dataset import get_training_set, get_test_set
-from model import UIE_model
+from net import UIE_model
 from opt import train_one_epoch, evaluate_fn
 import utils
 

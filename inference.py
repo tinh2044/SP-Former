@@ -8,7 +8,7 @@ import cv2
 import torch
 import torch.nn.functional as F
 
-from model import UIE_model
+from net import UIE_model
 import yaml
 
 
