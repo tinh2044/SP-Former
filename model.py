@@ -231,7 +231,7 @@ class SpectralBankModule(nn.Module):
         return fused
 
 
-class UIE_model(nn.Module):
+class SPFormer(nn.Module):
     def __init__(
         self,
         inp_channels=3,
@@ -316,6 +316,7 @@ class UIE_model(nn.Module):
             ]
         )
         self.out_conv = conv3x3(d, out_channels, bias=False)
+
         self.loss_fn = UnderwaterLosses(**(loss_cfg if loss_cfg else {}))
 
     def forward(self, inp, gt=None):
@@ -340,11 +341,9 @@ class UIE_model(nn.Module):
         cat1 = self.reduce1(torch.cat([u1, en1], dim=1))
         dec1 = self.decoder1(cat1)
         dec1 = self.refine(dec1)
-        out = self.out_conv(dec1) + inp
+        out = self.out_conv(dec1)
 
-        # Add output clamping to prevent extreme values
-        out = torch.clamp(out, 0.0, 1.0)
-
+        out = torch.tanh(out)
         if gt is not None:
             total_loss, loss_comps = self.loss_fn(out, gt)
             return {"output": out, "loss": total_loss, "loss_comps": loss_comps}
@@ -352,12 +351,16 @@ class UIE_model(nn.Module):
 
 
 if __name__ == "__main__":
-    model = UIE_model(
-        d=36, num_blocks=[2, 2, 2, 3], num_refinement=2, heads=[1, 2, 2, 4], ffn_exp=2.0
+    model = SPFormer(
+        d=24,
+        num_blocks=[2, 2, 2, 3],
+        num_refinement=4,
+        heads=[1, 2, 2, 4],
+        ffn_exp=2.0,
     )
     p = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print("UIE_model total trainable parameters:", p)
+    print("SPFormer total trainable parameters:", p)
     x = torch.randn(1, 3, 256, 256)
     y = torch.randn(1, 3, 256, 256)
     out = model(x, y)
-    print("Forward OK. Output shape:", out["output"].shape)
+    print("Output shape:", out["output"].shape)

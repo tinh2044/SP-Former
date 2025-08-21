@@ -141,9 +141,20 @@ class VGGFeatureExtractor(nn.Module):
             self.to(device=device)
 
     def forward(self, x):
-        mean = torch.tensor([0.485, 0.456, 0.406], device=x.device).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], device=x.device).view(1, 3, 1, 1)
-        x_in = (x - mean) / std
+        # Ensure input is in valid range and add small epsilon to prevent division by zero
+        x = torch.clamp(x, 0.0, 1.0)
+
+        # ImageNet normalization with more robust handling
+        mean = torch.tensor([0.485, 0.456, 0.406], device=x.device, dtype=x.dtype).view(
+            1, 3, 1, 1
+        )
+        std = torch.tensor([0.229, 0.224, 0.225], device=x.device, dtype=x.dtype).view(
+            1, 3, 1, 1
+        )
+
+        # Add small epsilon to prevent extreme values
+        x_in = (x - mean) / (std + 1e-8)
+
         out_feats = []
         cur = x_in
         for idx, layer in enumerate(self.vgg_slices):
@@ -247,12 +258,30 @@ class UnderwaterLosses(nn.Module):
         # Perceptual Loss
         if (self.vgg is not None) and (J is not None):
             try:
-                feats_hat = self.vgg(hatJ)
-                feats_gt = self.vgg(J)
+                # Ensure inputs are in valid range for VGG
+                hatJ_perc = torch.clamp(hatJ, 0.0, 1.0)
+                J_perc = torch.clamp(J, 0.0, 1.0)
+
+                feats_hat = self.vgg(hatJ_perc)
+                feats_gt = self.vgg(J_perc)
+
                 l_perc = 0.0
+                valid_features = 0
                 for fh, fg in zip(feats_hat, feats_gt):
-                    l_perc = l_perc + F.mse_loss(fh, fg, reduction="mean")
-                comps["perc"] = l_perc
+                    # Check for NaN or inf in features
+                    if torch.isfinite(fh).all() and torch.isfinite(fg).all():
+                        mse_loss = F.mse_loss(fh, fg, reduction="mean")
+                        if torch.isfinite(mse_loss):
+                            l_perc = l_perc + mse_loss
+                            valid_features += 1
+
+                # Only use perceptual loss if we have valid features
+                if valid_features > 0:
+                    comps["perc"] = l_perc
+                else:
+                    print("No valid features from VGG, using fallback")
+                    comps["perc"] = torch.tensor(0.0, device=device)
+
             except Exception as e:
                 print(f"Perceptual loss error: {e}")
                 comps["perc"] = torch.tensor(0.0, device=device)
@@ -262,15 +291,26 @@ class UnderwaterLosses(nn.Module):
         # MS-SSIM Loss
         if J is not None:
             try:
+                # Ensure inputs are valid for MS-SSIM
+                hatJ_ms = torch.clamp(hatJ, 0.0, 1.0)
+                J_ms = torch.clamp(J, 0.0, 1.0)
+
                 ms = ms_ssim(
-                    hatJ,
-                    J,
+                    hatJ_ms,
+                    J_ms,
                     data_range=1.0,
                     window_size=self.ms_window_size,
                     window_sigma=self.ms_window_sigma,
                     levels=self.ms_levels,
                 )
-                l_ms = (1.0 - ms).mean()
+
+                # Check for NaN in MS-SSIM output
+                if torch.isnan(ms).any():
+                    print("MS-SSIM output contains NaN, using fallback")
+                    l_ms = torch.tensor(0.0, device=device)
+                else:
+                    l_ms = (1.0 - ms).mean()
+
                 comps["ms_ssim"] = l_ms
             except Exception as e:
                 print(f"MS-SSIM loss error: {e}")
@@ -285,8 +325,8 @@ class UnderwaterLosses(nn.Module):
                 l_phys = F.l1_loss(I_model, I, reduction="mean")
                 comps["phys_rec"] = l_phys
                 if self.use_tv_on_t:
-                    tv_t = self.total_variation(t)
-                    tv_A = self.total_variation(A)
+                    tv_t = UnderwaterLosses.total_variation(t)
+                    tv_A = UnderwaterLosses.total_variation(A)
                     comps["tv_t"] = tv_t
                     comps["tv_A"] = tv_A
                 else:
