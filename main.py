@@ -56,6 +56,10 @@ def get_args_parser():
     )
 
     parser.add_argument("--print_freq", default=100, type=int, help="print frequency")
+    parser.add_argument(
+        "--eval_in_train", default=False, type=bool, help="eval in train"
+    )
+    parser.add_argument("--do_eval", default=False, type=bool, help="do eval")
 
     return parser
 
@@ -214,6 +218,7 @@ def main(args, cfg):
             epoch,
             print_freq=args.print_freq,
             log_dir=f"{log_dir}/train",
+            eval_in_train=args.eval_in_train,
         )
         scheduler.step()
 
@@ -235,31 +240,34 @@ def main(args, cfg):
         print()
 
         # Evaluate
-        test_results = evaluate_fn(
-            args,
-            test_dataloader,
-            model,
-            epoch,
-            print_freq=args.print_freq,
-            log_dir=f"{log_dir}/test",
-        )
+        if args.do_eval:
+            test_results = evaluate_fn(
+                args,
+                test_dataloader,
+                model,
+                epoch,
+                print_freq=args.print_freq,
+                log_dir=f"{log_dir}/test",
+            )
 
-        # Save best model
-        if test_results["psnr"] > best_psnr:
-            best_psnr = test_results["psnr"]
-            checkpoint_paths = [output_dir / "best_checkpoint.pth"]
-            for checkpoint_path in checkpoint_paths:
-                utils.save_on_master(
-                    {
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "scheduler_state_dict": scheduler.state_dict(),
-                        "epoch": epoch,
-                    },
-                    checkpoint_path,
-                )
+            # Save best model
+            if test_results["psnr"] > best_psnr:
+                best_psnr = test_results["psnr"]
+                checkpoint_paths = [output_dir / "best_checkpoint.pth"]
+                for checkpoint_path in checkpoint_paths:
+                    utils.save_on_master(
+                        {
+                            "model_state_dict": model.state_dict(),
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "scheduler_state_dict": scheduler.state_dict(),
+                            "epoch": epoch,
+                        },
+                        checkpoint_path,
+                    )
 
-        print(f"* TEST PSNR {test_results['psnr']:.3f} Best PSNR {best_psnr:.3f}")
+            print(f"* TEST PSNR {test_results['psnr']:.3f} Best PSNR {best_psnr:.3f}")
+        else:
+            test_results = {}
 
         # Log results
         log_results = {
