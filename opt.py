@@ -56,7 +56,7 @@ def train_one_epoch(
         if eval_in_train:
             metrics = compute_metrics(targets, pred_l, args.device)
             for metric_name, metric_value in metrics.items():
-                metric_logger.update(**{f"{metric_name}": metric_value.item()})
+                metric_logger.update(**{f"{metric_name}": metric_value})
 
         # Save sample images
         if batch_idx % (print_freq * 5) == 0:
