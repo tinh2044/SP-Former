@@ -3,101 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 
-
-def _gaussian(window_size: int, sigma: float):
-    coords = torch.arange(window_size, dtype=torch.float32) - (window_size - 1) / 2.0
-    g = torch.exp(-(coords**2) / (2 * sigma * sigma))
-    g = g / g.sum()
-    return g
-
-
-def create_window(window_size: int, channel: int, sigma: float = 1.5, device=None):
-    _1D_window = _gaussian(window_size, sigma).to(device=device)
-    _2D_window = _1D_window[:, None] @ _1D_window[None, :]
-    window = _2D_window.expand(channel, 1, window_size, window_size).contiguous()
-    return window
-
-
-def ssim_map(img1, img2, window, window_size, channel, C1, C2):
-    mu1 = F.conv2d(img1, window, padding=window_size // 2, groups=channel)
-    mu2 = F.conv2d(img2, window, padding=window_size // 2, groups=channel)
-
-    mu1_sq = mu1.pow(2)
-    mu2_sq = mu2.pow(2)
-    mu1_mu2 = mu1 * mu2
-
-    sigma1_sq = (
-        F.conv2d(img1 * img1, window, padding=window_size // 2, groups=channel) - mu1_sq
-    )
-    sigma2_sq = (
-        F.conv2d(img2 * img2, window, padding=window_size // 2, groups=channel) - mu2_sq
-    )
-    sigma12 = (
-        F.conv2d(img1 * img2, window, padding=window_size // 2, groups=channel)
-        - mu1_mu2
-    )
-
-    numerator = (2 * mu1_mu2 + C1) * (2 * sigma12 + C2)
-    denominator = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
-    s_map = numerator / (denominator + 1e-12)
-    return s_map.clamp(0.0, 1.0)
-
-
-def ms_ssim(
-    img1, img2, data_range=1.0, window_size=11, window_sigma=1.5, weights=None, levels=5
-):
-    device = img1.device
-    B, C, H, W = img1.shape
-    if weights is None:
-        weights = torch.tensor([0.0448, 0.2856, 0.3001, 0.2363, 0.1333], device=device)
-    else:
-        weights = torch.tensor(weights, device=device)
-    window = create_window(window_size, C, sigma=window_sigma, device=device)
-
-    L = data_range
-    C1 = (0.01 * L) ** 2
-    C2 = (0.03 * L) ** 2
-
-    mssim = []
-    mcs = []
-    img1_scale = img1
-    img2_scale = img2
-    for l in range(levels):
-        s_map = ssim_map(img1_scale, img2_scale, window, window_size, C, C1, C2)
-        mean_s = s_map.mean(dim=[1, 2, 3])  # B
-        mu1 = F.conv2d(img1_scale, window, padding=window_size // 2, groups=C)
-        mu2 = F.conv2d(img2_scale, window, padding=window_size // 2, groups=C)
-        sigma1_sq = F.conv2d(
-            img1_scale * img1_scale, window, padding=window_size // 2, groups=C
-        ) - mu1.pow(2)
-        sigma2_sq = F.conv2d(
-            img2_scale * img2_scale, window, padding=window_size // 2, groups=C
-        ) - mu2.pow(2)
-        sigma12 = (
-            F.conv2d(
-                img1_scale * img2_scale, window, padding=window_size // 2, groups=C
-            )
-            - mu1 * mu2
-        )
-        cs_map = (2.0 * sigma12 + C2) / (sigma1_sq + sigma2_sq + C2 + 1e-12)
-        mean_cs = cs_map.mean(dim=[1, 2, 3])
-
-        mssim.append(mean_s)
-        mcs.append(mean_cs)
-
-        img1_scale = F.avg_pool2d(
-            img1_scale, kernel_size=2, stride=2, count_include_pad=False
-        )
-        img2_scale = F.avg_pool2d(
-            img2_scale, kernel_size=2, stride=2, count_include_pad=False
-        )
-
-    mssim = torch.stack(mssim, dim=0)  # levels x B
-    mcs = torch.stack(mcs, dim=0)
-
-    weights = weights[: mssim.size(0)].unsqueeze(1)  # Lx1
-    ms = (mcs[:-1] ** weights[:-1]).prod(dim=0) * (mssim[-1] ** weights[-1])
-    return ms  # return per-sample score
+from pytorch_msssim import ms_ssim as pytorch_ms_ssim
 
 
 class VGGFeatureExtractor(nn.Module):
@@ -185,11 +91,10 @@ class UnderwaterLosses(nn.Module):
         self,
         weights=None,
         perc_layers=("relu3_3", "relu4_3"),
-        ms_ssim_levels=5,
         ms_window_size=11,
         ms_window_sigma=1.5,
-        use_tv_on_t=False,
-        tv_weight=1e-4,
+        use_tv_on_t=True,
+        tv_weight=1e-3,
         device=None,
     ):
         super().__init__()
@@ -207,12 +112,11 @@ class UnderwaterLosses(nn.Module):
             for k, v in default_weights.items():
                 weights.setdefault(k, v)
         self.weights = weights
-        self.ms_levels = ms_ssim_levels
         self.ms_window_size = ms_window_size
         self.ms_window_sigma = ms_window_sigma
         self.perc_layers = perc_layers
-        self.use_tv_on_t = True  # Enable TV regularization on physics parameters
-        self.tv_weight = 1e-3  # Increased TV weight
+        self.use_tv_on_t = use_tv_on_t
+        self.tv_weight = tv_weight
         self.device = (
             device
             if device is not None
@@ -307,13 +211,15 @@ class UnderwaterLosses(nn.Module):
                 hatJ_ms = torch.clamp(hatJ, 0.0, 1.0)
                 J_ms = torch.clamp(J, 0.0, 1.0)
 
-                ms = ms_ssim(
+                # Use pytorch_msssim directly
+                ms = pytorch_ms_ssim(
                     hatJ_ms,
                     J_ms,
                     data_range=1.0,
-                    window_size=self.ms_window_size,
-                    window_sigma=self.ms_window_sigma,
-                    levels=self.ms_levels,
+                    size_average=True,  # Return per-sample scores
+                    win_size=self.ms_window_size,
+                    win_sigma=self.ms_window_sigma,
+                    weights=None,  # Use default weights
                 )
 
                 # Check for NaN in MS-SSIM output
