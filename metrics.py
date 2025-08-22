@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from pytorch_msssim import ssim
+from pytorch_msssim import ssim, ms_ssim
 import lpips
 import warnings
 
@@ -27,6 +27,11 @@ def calculate_ssim(img1, img2):
     return ssim(img1, img2, data_range=1.0, size_average=True).item()
 
 
+def calculate_ms_ssim(img1, img2):
+    # MS-SSIM expects (B, C, H, W)
+    return ms_ssim(img1, img2, data_range=1.0, size_average=True).item()
+
+
 def calculate_lpips(img1, img2, device="cuda"):
     model = _lpips_model.to(device)
     with torch.no_grad():
@@ -36,9 +41,11 @@ def calculate_lpips(img1, img2, device="cuda"):
 def compute_metrics(img1, img2, device="cuda"):
     psnr = calculate_psnr(img1, img2)
     ssim = calculate_ssim(img1, img2)
+    ms_ssim = calculate_ms_ssim(img1, img2)
     lpips = calculate_lpips(img1, img2, device)
     return {
         "psnr": psnr,
         "ssim": ssim,
+        "ms_ssim": ms_ssim,
         "lpips": lpips,
     }

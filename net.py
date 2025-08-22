@@ -357,12 +357,19 @@ class SPFormer(nn.Module):
         dec1 = self.refine(dec1)
         out = self.out_conv(dec1)
 
+        # Apply tanh activation to get output in [-1, 1] range
+        out = torch.tanh(out)
+
         if gt is not None:
             # Aggregate physics parameters (use last stage for simplicity)
             t_final = self.phys_params["t"][-1]  # Use last stage transmission
             A_final = self.phys_params["A"][-1]  # Use last stage veiling
 
-            total_loss, loss_comps = self.loss_fn(out, gt, I=inp, t=t_final, A=A_final)
+            # Convert tanh output [-1, 1] to [0, 1] for loss computation
+            out_01 = (out + 1) / 2
+            total_loss, loss_comps = self.loss_fn(
+                out_01, gt, I=inp, t=t_final, A=A_final
+            )
             return {"output": out, "loss": total_loss, "loss_comps": loss_comps}
         return {"output": out}
 
