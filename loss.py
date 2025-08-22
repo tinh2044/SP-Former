@@ -96,6 +96,7 @@ class UnderwaterLosses(nn.Module):
         use_tv_on_t=True,
         tv_weight=1e-3,
         device=None,
+        **kwargs,
     ):
         super().__init__()
         default_weights = {

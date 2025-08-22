@@ -27,7 +27,6 @@ model:
       grad: 0.1            
       tv: 0.0001          
     perc_layers: ["relu3_3", "relu4_3"] 
-    ms_ssim_levels: 5     
     ms_window_size: 11    
     ms_window_sigma: 1.5  
     use_tv_on_t: true     
