@@ -144,13 +144,17 @@ class VGGFeatureExtractor(nn.Module):
         # Ensure input is in valid range and add small epsilon to prevent division by zero
         x = torch.clamp(x, 0.0, 1.0)
 
-        # ImageNet normalization with more robust handling
+        # ImageNet normalization - handle both [0,1] and [-1,1] ranges
         mean = torch.tensor([0.485, 0.456, 0.406], device=x.device, dtype=x.dtype).view(
             1, 3, 1, 1
         )
         std = torch.tensor([0.229, 0.224, 0.225], device=x.device, dtype=x.dtype).view(
             1, 3, 1, 1
         )
+
+        # Normalize to [0,1] first if input is in [-1,1]
+        if x.min() < 0:
+            x = (x + 1) / 2
 
         # Add small epsilon to prevent extreme values
         x_in = (x - mean) / (std + 1e-8)
@@ -191,11 +195,11 @@ class UnderwaterLosses(nn.Module):
         super().__init__()
         default_weights = {
             "l1": 1.0,
-            "perc": 0.02,
+            "perc": 0.01,  # Reduced perceptual weight to prevent exploding
             "ms_ssim": 0.5,
-            "phys": 0.8,
+            "phys": 2.0,  # Increased physics weight for better underwater modeling
             "grad": 0.1,
-            "tv": tv_weight,
+            "tv": 1e-3,  # TV regularization weight
         }
         if weights is None:
             weights = default_weights
@@ -207,8 +211,8 @@ class UnderwaterLosses(nn.Module):
         self.ms_window_size = ms_window_size
         self.ms_window_sigma = ms_window_sigma
         self.perc_layers = perc_layers
-        self.use_tv_on_t = use_tv_on_t
-        self.tv_weight = tv_weight
+        self.use_tv_on_t = True  # Enable TV regularization on physics parameters
+        self.tv_weight = 1e-3  # Increased TV weight
         self.device = (
             device
             if device is not None
@@ -245,6 +249,14 @@ class UnderwaterLosses(nn.Module):
         if A is not None:
             A = A.to(device)
             A = torch.clamp(A, 0.0, 1.0)
+
+        # Denormalize from [-1, 1] to [0, 1] if needed (for models that expect [0, 1])
+        if hatJ.min() < 0:
+            hatJ = (hatJ + 1) / 2
+        if J is not None and J.min() < 0:
+            J = (J + 1) / 2
+        if I is not None and I.min() < 0:
+            I = (I + 1) / 2
 
         comps = {}
 
@@ -321,6 +333,16 @@ class UnderwaterLosses(nn.Module):
         # Physics Loss
         if (I is not None) and (t is not None) and (A is not None):
             try:
+                # Ensure physics parameters match image dimensions
+                if t.shape[-2:] != I.shape[-2:]:
+                    t = F.interpolate(
+                        t, size=I.shape[-2:], mode="bilinear", align_corners=False
+                    )
+                if A.shape[-2:] != I.shape[-2:]:
+                    A = F.interpolate(
+                        A, size=I.shape[-2:], mode="bilinear", align_corners=False
+                    )
+
                 I_model = hatJ * t + A * (1.0 - t)
                 l_phys = F.l1_loss(I_model, I, reduction="mean")
                 comps["phys_rec"] = l_phys

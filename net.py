@@ -207,9 +207,10 @@ class SpectralBankModule(nn.Module):
         beta = self.beta_head(tilde)
         A = self.A_head(tilde)
         eps = 1e-6
+        t = torch.exp(-beta)  # transmission map
+
         if guidance_resize.shape[1] >= 3:
             I_rgb = guidance_resize[:, :3, :, :]
-            t = torch.exp(-beta)
             J_approx = (I_rgb - A * (1 - t)) / (t + eps)
             Jdesc = F.adaptive_avg_pool2d(J_approx, 1)
             Jdesc = self.jproj(Jdesc)
@@ -217,7 +218,9 @@ class SpectralBankModule(nn.Module):
             fused = self.gcorr(recomposed, (feat + Jdesc))
         else:
             fused = self.gcorr(recomposed, feat)
-        return fused
+
+        # Return physics parameters for loss computation
+        return fused, t, A
 
 
 class SPFormer(nn.Module):
@@ -298,6 +301,9 @@ class SPFormer(nn.Module):
                 for _ in range(num_blocks[0])
             ]
         )
+
+        # Physics parameter collectors
+        self.phys_params = {"t": [], "A": []}
         self.refine = nn.Sequential(
             *[
                 TransformerBlockLite(dim=d, num_heads=heads[0], ffn_expansion=ffn_exp)
@@ -309,6 +315,9 @@ class SPFormer(nn.Module):
         self.loss_fn = UnderwaterLosses(**(loss_cfg if loss_cfg else {}))
 
     def forward(self, inp, gt=None):
+        # Reset physics parameters
+        self.phys_params = {"t": [], "A": []}
+
         e1 = self.patch_embed(inp)
         en1 = self.encoder1(e1)
         d12 = self.down1(en1)
@@ -317,15 +326,31 @@ class SPFormer(nn.Module):
         en3 = self.encoder3(d23)
         d34 = self.down3(en3)
         lat = self.latent(d34)
-        lat = lat + self.sbm4(inp, lat)
+
+        # Update with physics parameters
+        lat_update, t4, A4 = self.sbm4(inp, lat)
+        lat = lat + lat_update
+        self.phys_params["t"].append(t4)
+        self.phys_params["A"].append(A4)
+
         u3 = self.up4_3(lat)
         cat3 = self.reduce3(torch.cat([u3, en3], dim=1))
         dec3 = self.decoder3(cat3)
-        dec3 = dec3 + self.sbm3(inp, dec3)
+
+        dec3_update, t3, A3 = self.sbm3(inp, dec3)
+        dec3 = dec3 + dec3_update
+        self.phys_params["t"].append(t3)
+        self.phys_params["A"].append(A3)
+
         u2 = self.up3_2(dec3)
         cat2 = self.reduce2(torch.cat([u2, en2], dim=1))
         dec2 = self.decoder2(cat2)
-        dec2 = dec2 + self.sbm2(inp, dec2)
+
+        dec2_update, t2, A2 = self.sbm2(inp, dec2)
+        dec2 = dec2 + dec2_update
+        self.phys_params["t"].append(t2)
+        self.phys_params["A"].append(A2)
+
         u1 = self.up2_1(dec2)
         cat1 = self.reduce1(torch.cat([u1, en1], dim=1))
         dec1 = self.decoder1(cat1)
@@ -333,8 +358,18 @@ class SPFormer(nn.Module):
         out = self.out_conv(dec1)
 
         out = torch.tanh(out)
+
         if gt is not None:
-            total_loss, loss_comps = self.loss_fn(out, gt)
+            # Convert tanh output to [0, 1] range
+            out_01 = (out + 1) / 2
+
+            # Aggregate physics parameters (use last stage for simplicity)
+            t_final = self.phys_params["t"][-1]  # Use last stage transmission
+            A_final = self.phys_params["A"][-1]  # Use last stage veiling
+
+            total_loss, loss_comps = self.loss_fn(
+                out_01, gt, I=inp, t=t_final, A=A_final
+            )
             return {"output": out, "loss": total_loss, "loss_comps": loss_comps}
         return {"output": out}
 

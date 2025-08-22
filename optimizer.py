@@ -55,7 +55,7 @@ def build_scheduler(config, optimizer, last_epoch=-1):
         scheduler = StepLR(
             optimizer,
             step_size=scheduler_config["step_size"],
-            gamma=scheduler_config.get("gamma", 0.1),
+            gamma=scheduler_config.get("gamma", 0.5),  # Reduced gamma for more gradual decay
             last_epoch=last_epoch,
         )
     elif scheduler_name == "reducelronplateau":
