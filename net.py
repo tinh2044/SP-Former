@@ -26,34 +26,65 @@ class LayerNorm2d(nn.Module):
         return x
 
 
-class LinearizedAttention(nn.Module):
-    def __init__(self, dim, num_heads=1, bias=False):
+class LinearAttention(nn.Module):
+    def __init__(
+        self,
+        chan,
+        chan_out=None,
+        kernel_size=1,
+        padding=0,
+        stride=1,
+        key_dim=64,
+        value_dim=64,
+        heads=8,
+        norm_queries=True,
+    ):
         super().__init__()
-        assert dim % num_heads == 0
-        self.dim = dim
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.qkv = conv1x1(dim, dim * 3, bias=bias)
-        self.proj = conv1x1(dim, dim, bias=bias)
+        self.chan = chan
+        chan_out = chan if chan_out is None else chan_out
 
-    def phi(self, x):
-        return F.elu(x) + 1.0
+        self.key_dim = key_dim
+        self.value_dim = value_dim
+        self.heads = heads
 
-    def forward(self, x):
-        b, c, h, w = x.shape
-        qkv = self.qkv(x)
-        q, k, v = torch.chunk(qkv, 3, dim=1)
-        n = h * w
+        self.norm_queries = norm_queries
 
-        def reshape(t):
-            return t.view(b, self.num_heads, self.head_dim, n)
+        conv_kwargs = {"padding": padding, "stride": stride}
+        self.to_q = nn.Conv2d(chan, key_dim * heads, kernel_size, **conv_kwargs)
+        self.to_k = nn.Conv2d(chan, key_dim * heads, kernel_size, **conv_kwargs)
+        self.to_v = nn.Conv2d(chan, value_dim * heads, kernel_size, **conv_kwargs)
 
-        q_h, k_h, v_h = reshape(q), reshape(k), reshape(v)
-        q_phi, k_phi = self.phi(q_h), self.phi(k_h)
-        KV = torch.einsum("b h c n, b h d n -> b h c d", k_phi, v_h)
-        out_h = torch.einsum("b h c n, b h c d -> b h d n", q_phi, KV)
-        out = out_h.contiguous().view(b, c, h, w)
-        return self.proj(out)
+        out_conv_kwargs = {"padding": padding}
+        self.to_out = nn.Conv2d(
+            value_dim * heads, chan_out, kernel_size, **out_conv_kwargs
+        )
+
+    def forward(self, x, context=None):
+        b, c, h, w, k_dim, heads = *x.shape, self.key_dim, self.heads
+
+        q, k, v = (self.to_q(x), self.to_k(x), self.to_v(x))
+
+        q, k, v = map(lambda t: t.reshape(b, heads, -1, h * w), (q, k, v))
+
+        q, k = map(lambda x: x * (self.key_dim**-0.25), (q, k))
+
+        if context is not None:
+            context = context.reshape(b, c, 1, -1)
+            ck, cv = self.to_k(context), self.to_v(context)
+            ck, cv = map(lambda t: t.reshape(b, heads, k_dim, -1), (ck, cv))
+            k = torch.cat((k, ck), dim=3)
+            v = torch.cat((v, cv), dim=3)
+
+        k = k.softmax(dim=-1)
+
+        if self.norm_queries:
+            q = q.softmax(dim=-2)
+
+        context = torch.einsum("bhdn,bhen->bhde", k, v)
+        out = torch.einsum("bhdn,bhde->bhen", q, context)
+        out = out.reshape(b, -1, h, w)
+        out = self.to_out(out)
+        return out
 
 
 class GatedDSFFN(nn.Module):
@@ -81,12 +112,33 @@ class GatedDSFFN(nn.Module):
 
 
 class TransformerBlockLite(nn.Module):
-    def __init__(self, dim, num_heads=1, ffn_expansion=2.0):
+    def __init__(
+        self,
+        dim,
+        num_heads=1,
+        ffn_expansion=2.0,
+        key_dim=None,
+        value_dim=None,
+        norm_queries=True,
+    ):
         super().__init__()
         self.norm1 = LayerNorm2d(dim)
-        self.attn = LinearizedAttention(dim, num_heads=num_heads)
         self.norm2 = LayerNorm2d(dim)
         self.ffn = GatedDSFFN(dim, expansion=ffn_expansion)
+
+        if key_dim is None:
+            key_dim = max(32, dim // 8)
+        if value_dim is None:
+            value_dim = key_dim
+
+        self.attn = LinearAttention(
+            chan=dim,
+            chan_out=dim,
+            key_dim=key_dim,
+            value_dim=value_dim,
+            heads=num_heads,
+            norm_queries=norm_queries,
+        )
 
     def forward(self, x):
         x = x + self.attn(self.norm1(x))
@@ -147,8 +199,6 @@ class GroupCorr(nn.Module):
         k = self.k(y).view(b, self.groups, self.gdim, n)
         v = self.v(y).view(b, self.groups, self.gdim, n)
         k_desc = k.mean(-1, keepdim=True)
-        # FIXED: use correct einsum with k_desc shape (B, g, c', 1)
-        # Use 'd' for the single dimension instead of '1'
         att = torch.einsum("b g c n, b g c d -> b g d n", q, k_desc)
         att = self.norm(att.view(b, -1)).view(b, self.groups, 1, n)
         out = att * v
@@ -219,7 +269,6 @@ class SpectralBankModule(nn.Module):
         else:
             fused = self.gcorr(recomposed, feat)
 
-        # Return physics parameters for loss computation
         return fused, t, A
 
 
@@ -234,39 +283,43 @@ class SPFormer(nn.Module):
         heads=[1, 2, 2, 4],
         ffn_exp=2.0,
         loss_cfg=None,
+        key_dim=None,
+        value_dim=None,
+        norm_queries=True,
     ):
         super().__init__()
         self.patch_embed = PatchEmbed(in_ch=inp_channels, embed_dim=d)
+        block_kwargs = {
+            "ffn_expansion": ffn_exp,
+            "key_dim": key_dim,
+            "value_dim": value_dim,
+            "norm_queries": norm_queries,
+        }
+
         self.encoder1 = nn.Sequential(
             *[
-                TransformerBlockLite(dim=d, num_heads=heads[0], ffn_expansion=ffn_exp)
+                TransformerBlockLite(dim=d, num_heads=heads[0], **block_kwargs)
                 for _ in range(num_blocks[0])
             ]
         )
         self.down1 = Downsample(d)
         self.encoder2 = nn.Sequential(
             *[
-                TransformerBlockLite(
-                    dim=2 * d, num_heads=heads[1], ffn_expansion=ffn_exp
-                )
+                TransformerBlockLite(dim=2 * d, num_heads=heads[1], **block_kwargs)
                 for _ in range(num_blocks[1])
             ]
         )
         self.down2 = Downsample(2 * d)
         self.encoder3 = nn.Sequential(
             *[
-                TransformerBlockLite(
-                    dim=4 * d, num_heads=heads[2], ffn_expansion=ffn_exp
-                )
+                TransformerBlockLite(dim=4 * d, num_heads=heads[2], **block_kwargs)
                 for _ in range(num_blocks[2])
             ]
         )
         self.down3 = Downsample(4 * d)
         self.latent = nn.Sequential(
             *[
-                TransformerBlockLite(
-                    dim=8 * d, num_heads=heads[3], ffn_expansion=ffn_exp
-                )
+                TransformerBlockLite(dim=8 * d, num_heads=heads[3], **block_kwargs)
                 for _ in range(num_blocks[3])
             ]
         )
@@ -275,9 +328,7 @@ class SPFormer(nn.Module):
         self.reduce3 = conv1x1(8 * d, 4 * d)
         self.decoder3 = nn.Sequential(
             *[
-                TransformerBlockLite(
-                    dim=4 * d, num_heads=heads[2], ffn_expansion=ffn_exp
-                )
+                TransformerBlockLite(dim=4 * d, num_heads=heads[2], **block_kwargs)
                 for _ in range(num_blocks[2])
             ]
         )
@@ -286,9 +337,7 @@ class SPFormer(nn.Module):
         self.reduce2 = conv1x1(4 * d, 2 * d)
         self.decoder2 = nn.Sequential(
             *[
-                TransformerBlockLite(
-                    dim=2 * d, num_heads=heads[1], ffn_expansion=ffn_exp
-                )
+                TransformerBlockLite(dim=2 * d, num_heads=heads[1], **block_kwargs)
                 for _ in range(num_blocks[1])
             ]
         )
@@ -297,16 +346,15 @@ class SPFormer(nn.Module):
         self.reduce1 = conv1x1(2 * d, d)
         self.decoder1 = nn.Sequential(
             *[
-                TransformerBlockLite(dim=d, num_heads=heads[0], ffn_expansion=ffn_exp)
+                TransformerBlockLite(dim=d, num_heads=heads[0], **block_kwargs)
                 for _ in range(num_blocks[0])
             ]
         )
 
-        # Physics parameter collectors
         self.phys_params = {"t": [], "A": []}
         self.refine = nn.Sequential(
             *[
-                TransformerBlockLite(dim=d, num_heads=heads[0], ffn_expansion=ffn_exp)
+                TransformerBlockLite(dim=d, num_heads=heads[0], **block_kwargs)
                 for _ in range(num_refinement)
             ]
         )
@@ -315,7 +363,6 @@ class SPFormer(nn.Module):
         self.loss_fn = UnderwaterLosses(**(loss_cfg if loss_cfg else {}))
 
     def forward(self, inp, gt=None):
-        # Reset physics parameters
         self.phys_params = {"t": [], "A": []}
 
         e1 = self.patch_embed(inp)
@@ -327,7 +374,6 @@ class SPFormer(nn.Module):
         d34 = self.down3(en3)
         lat = self.latent(d34)
 
-        # Update with physics parameters
         lat_update, t4, A4 = self.sbm4(inp, lat)
         lat = lat + lat_update
         self.phys_params["t"].append(t4)
@@ -357,15 +403,10 @@ class SPFormer(nn.Module):
         dec1 = self.refine(dec1)
         out = self.out_conv(dec1)
 
-        # Apply tanh activation to get output in [-1, 1] range
-        out = torch.tanh(out)
-
         if gt is not None:
-            # Aggregate physics parameters (use last stage for simplicity)
-            t_final = self.phys_params["t"][-1]  # Use last stage transmission
-            A_final = self.phys_params["A"][-1]  # Use last stage veiling
+            t_final = self.phys_params["t"][-1]
+            A_final = self.phys_params["A"][-1]
 
-            # Convert tanh output [-1, 1] to [0, 1] for loss computation
             out_01 = (out + 1) / 2
             total_loss, loss_comps = self.loss_fn(
                 out_01, gt, I=inp, t=t_final, A=A_final
@@ -383,7 +424,7 @@ if __name__ == "__main__":
         ffn_exp=2.0,
     )
     p = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print("SPFormer total trainable parameters:", p)
+    print(f"SPFormer total trainable parameters: {p:,}")
     x = torch.randn(1, 3, 256, 256)
     y = torch.randn(1, 3, 256, 256)
     out = model(x, y)
