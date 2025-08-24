@@ -31,15 +31,16 @@ def train_one_epoch(
     ):
         inputs = batch["inputs"].to(args.device)
         targets = batch["targets"].to(args.device)
-
-        # Forward pass
+        if inputs is None:
+            raise ValueError("inputs is None")
+        if targets is None:
+            raise ValueError("targets is None")
         outputs = model(inputs, targets)
 
         pred_l = outputs["output"]
-        total_loss = outputs["loss"]
-        loss_comps = outputs["loss_comps"]
+        loss = outputs["loss"]
+        total_loss = loss["total"]
 
-        # Backward pass
         optimizer.zero_grad()
         total_loss.backward()
 
@@ -48,9 +49,7 @@ def train_one_epoch(
 
         optimizer.step()
 
-        # Update metrics
-        metric_logger.update(total_loss=total_loss.item())
-        for loss_name, loss_value in loss_comps.items():
+        for loss_name, loss_value in loss.items():
             metric_logger.update(**{f"{loss_name}_loss": loss_value.item()})
 
         if eval_in_train:

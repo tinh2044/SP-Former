@@ -59,7 +59,6 @@ class LinearAttention(nn.Module):
             value_dim * heads, chan_out, kernel_size, **out_conv_kwargs
         )
 
-        # Add normalization layers
         self.norm_q = nn.LayerNorm(key_dim)
         self.norm_k = nn.LayerNorm(key_dim)
         self.norm_v = nn.LayerNorm(value_dim)
@@ -71,7 +70,6 @@ class LinearAttention(nn.Module):
 
         q, k, v = map(lambda t: t.reshape(b, heads, -1, h * w), (q, k, v))
 
-        # Apply normalization
         q = self.norm_q(q.transpose(-1, -2)).transpose(-1, -2)
         k = self.norm_k(k.transpose(-1, -2)).transpose(-1, -2)
         v = self.norm_v(v.transpose(-1, -2)).transpose(-1, -2)
@@ -279,7 +277,7 @@ class SpectralBankModule(nn.Module):
         else:
             fused = self.gcorr(recomposed, feat)
 
-        return fused, t, A
+        return fused
 
 
 class SPFormer(nn.Module):
@@ -290,7 +288,7 @@ class SPFormer(nn.Module):
         d=36,
         num_blocks=[2, 2, 2, 3],
         num_refinement=2,
-        heads=[2, 4, 4, 8],  # Increased heads for better attention
+        heads=[2, 4, 4, 8],
         ffn_exp=2.0,
         loss_cfg=None,
         key_dim=None,
@@ -361,7 +359,6 @@ class SPFormer(nn.Module):
             ]
         )
 
-        self.phys_params = {"t": [], "A": []}
         self.refine = nn.Sequential(
             *[
                 TransformerBlockLite(dim=d, num_heads=heads[0], **block_kwargs)
@@ -373,8 +370,8 @@ class SPFormer(nn.Module):
         self.loss_fn = UnderwaterLosses(**(loss_cfg if loss_cfg else {}))
 
     def forward(self, inp, gt=None):
-        self.phys_params = {"t": [], "A": []}
-
+        if inp is None:
+            raise ValueError("inp is None")
         e1 = self.patch_embed(inp)
         en1 = self.encoder1(e1)
         d12 = self.down1(en1)
@@ -384,45 +381,33 @@ class SPFormer(nn.Module):
         d34 = self.down3(en3)
         lat = self.latent(d34)
 
-        lat_update, t4, A4 = self.sbm4(inp, lat)
+        lat_update = self.sbm4(inp, lat)
         lat = lat + lat_update
-        self.phys_params["t"].append(t4)
-        self.phys_params["A"].append(A4)
 
         u3 = self.up4_3(lat)
         cat3 = self.reduce3(torch.cat([u3, en3], dim=1))
         dec3 = self.decoder3(cat3)
 
-        dec3_update, t3, A3 = self.sbm3(inp, dec3)
+        dec3_update = self.sbm3(inp, dec3)
         dec3 = dec3 + dec3_update
-        self.phys_params["t"].append(t3)
-        self.phys_params["A"].append(A3)
 
         u2 = self.up3_2(dec3)
         cat2 = self.reduce2(torch.cat([u2, en2], dim=1))
         dec2 = self.decoder2(cat2)
 
-        dec2_update, t2, A2 = self.sbm2(inp, dec2)
+        dec2_update = self.sbm2(inp, dec2)
         dec2 = dec2 + dec2_update
-        self.phys_params["t"].append(t2)
-        self.phys_params["A"].append(A2)
 
         u1 = self.up2_1(dec2)
         cat1 = self.reduce1(torch.cat([u1, en1], dim=1))
         dec1 = self.decoder1(cat1)
         dec1 = self.refine(dec1)
         out = self.out_conv(dec1)
-
         if gt is not None:
-            t_final = self.phys_params["t"][-1]
-            A_final = self.phys_params["A"][-1]
-
-            out_01 = (out + 1) / 2
-            total_loss, loss_comps = self.loss_fn(
-                out_01, gt, I=inp, t=t_final, A=A_final
-            )
-            return {"output": out, "loss": total_loss, "loss_comps": loss_comps}
-        return {"output": out}
+            loss = self.loss_fn(out, gt)
+        else:
+            loss = None
+        return {"output": out, "loss": loss, "gt": gt}
 
 
 if __name__ == "__main__":
@@ -439,3 +424,6 @@ if __name__ == "__main__":
     y = torch.randn(1, 3, 256, 256)
     out = model(x, y)
     print("Output shape:", out["output"].shape)
+
+    for k, v in out["loss"].items():
+        print(f"{k}: {v.item()}")

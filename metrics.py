@@ -1,8 +1,10 @@
+import numpy as np
 import torch
 import torch.nn.functional as F
 from pytorch_msssim import ssim, ms_ssim
 import lpips
 import warnings
+from skimage.metrics import peak_signal_noise_ratio as compare_psnr
 
 # Initialize LPIPS once; suppress pickle FutureWarning from inside the library load
 with warnings.catch_warnings():
@@ -15,27 +17,45 @@ with warnings.catch_warnings():
 
 
 def calculate_psnr(img1, img2, max_val=1.0):
-    mse = F.mse_loss(img1, img2)
-    if mse == 0:
-        return float("inf")
-    psnr = 20 * torch.log10(max_val / torch.sqrt(mse))
-    return psnr.item()
+    img1 = img1.data.cpu().numpy().astype(np.float32)
+    img2 = img2.data.cpu().numpy().astype(np.float32)
+    value = 0
+    for i in range(img1.shape[0]):
+        psnr = compare_psnr(img1[i], img2[i], data_range=max_val)
+        value += psnr
+
+    return value / img1.shape[0]
 
 
 def calculate_ssim(img1, img2):
     # SSIM expects (B, C, H, W)
-    return ssim(img1, img2, data_range=1.0, size_average=True).item()
+    img1 = img1.data.cpu().numpy().astype(np.float32)
+    img2 = img2.data.cpu().numpy().astype(np.float32)
+    value = 0
+    for i in range(img1.shape[0]):
+        value += ssim(img1[i], img2[i], data_range=1.0)
+    return value / img1.shape[0]
 
 
 def calculate_ms_ssim(img1, img2):
     # MS-SSIM expects (B, C, H, W)
-    return ms_ssim(img1, img2, data_range=1.0, size_average=True).item()
+    img1 = img1.data.cpu().numpy().astype(np.float32)
+    img2 = img2.data.cpu().numpy().astype(np.float32)
+    value = 0
+    for i in range(img1.shape[0]):
+        value += ms_ssim(img1[i], img2[i], data_range=1.0)
+    return value / img1.shape[0]
 
 
 def calculate_lpips(img1, img2, device="cuda"):
     model = _lpips_model.to(device)
     with torch.no_grad():
-        return model(img1, img2).mean().item()
+        img1 = img1.data.cpu().numpy().astype(np.float32)
+        img2 = img2.data.cpu().numpy().astype(np.float32)
+        value = 0
+        for i in range(img1.shape[0]):
+            value += model(img1[i], img2[i])
+        return value / img1.shape[0]
 
 
 def compute_metrics(img1, img2, device="cuda"):

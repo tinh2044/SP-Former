@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import torch
 import torch.utils.data as data
 import torchvision.transforms as transforms
@@ -21,9 +22,28 @@ class UIEDataset(data.Dataset):
 
         # Get image files
         self.image_files = self._get_image_files()
+        self.extensions = [".png", ".jpg", ".jpeg", ".bmp", ".tiff"]
 
         # Setup transforms
         self.transform = self._get_transforms()
+
+        print(f"UIEDataset[{split}] -> {len(self.image_files)} samples")
+        print(
+            f"  Input: {self.input_dir} ({len(self._list_files(self.input_dir))} files)"
+        )
+        print(
+            f"  Target: {self.target_dir} ({len(self._list_files(self.target_dir))} files)"
+        )
+
+    def _list_files(self, folder):
+        if not os.path.exists(folder):
+            return []
+        files = []
+        for fp in Path(folder).rglob("*"):
+            print(fp.suffix.lower())
+            if fp.is_file() and fp.suffix.lower() in self.extensions:
+                files.append(fp)
+        return files
 
     def _get_image_files(self):
         """Get list of image files"""

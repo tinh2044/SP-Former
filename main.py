@@ -182,9 +182,9 @@ def main(args, cfg):
     output_dir = Path(cfg["training"]["model_dir"])
 
     if args.eval:
-        if not args.resume:
+        if not (args.resume or args.finetune):
             logger.warning(
-                "Please specify the trained model: --resume /path/to/best_checkpoint.pth"
+                "Please specify the trained model: --resume /path/to/best_checkpoint.pth or --finetune /path/to/best_checkpoint.pth"
             )
 
         test_results = evaluate_fn(
@@ -210,6 +210,7 @@ def main(args, cfg):
     best_psnr = 0.0
 
     for epoch in range(args.start_epoch, args.epochs):
+        logger.info(f"Epoch {epoch} of {args.epochs}")
         train_results = train_one_epoch(
             args,
             model,
