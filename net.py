@@ -59,12 +59,22 @@ class LinearAttention(nn.Module):
             value_dim * heads, chan_out, kernel_size, **out_conv_kwargs
         )
 
+        # Add normalization layers
+        self.norm_q = nn.LayerNorm(key_dim)
+        self.norm_k = nn.LayerNorm(key_dim)
+        self.norm_v = nn.LayerNorm(value_dim)
+
     def forward(self, x, context=None):
         b, c, h, w, k_dim, heads = *x.shape, self.key_dim, self.heads
 
         q, k, v = (self.to_q(x), self.to_k(x), self.to_v(x))
 
         q, k, v = map(lambda t: t.reshape(b, heads, -1, h * w), (q, k, v))
+
+        # Apply normalization
+        q = self.norm_q(q.transpose(-1, -2)).transpose(-1, -2)
+        k = self.norm_k(k.transpose(-1, -2)).transpose(-1, -2)
+        v = self.norm_v(v.transpose(-1, -2)).transpose(-1, -2)
 
         q, k = map(lambda x: x * (self.key_dim**-0.25), (q, k))
 
@@ -280,7 +290,7 @@ class SPFormer(nn.Module):
         d=36,
         num_blocks=[2, 2, 2, 3],
         num_refinement=2,
-        heads=[1, 2, 2, 4],
+        heads=[2, 4, 4, 8],  # Increased heads for better attention
         ffn_exp=2.0,
         loss_cfg=None,
         key_dim=None,

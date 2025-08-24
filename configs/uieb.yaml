@@ -20,11 +20,11 @@ model:
   
   loss_cfg:
     weights:
-      l1: 1.0              
-      perc: 0.02           
-      ms_ssim: 0.5         
-      phys: 0.8            
-      grad: 0.1            
+      l1: 5.0              # Increased from 1.0
+      perc: 0.001          # Reduced from 0.02 (was causing exploding gradients)
+      ms_ssim: 2.0         # Increased from 0.5
+      phys: 1.0            # Increased from 0.8
+      grad: 0.5            # Increased from 0.1
       tv: 0.0001          
     perc_layers: ["relu3_3", "relu4_3"] 
     ms_window_size: 11    
@@ -32,21 +32,21 @@ model:
     use_tv_on_t: true     
 
 training:
-  model_dir: "./outputs/UIEB/"
+  model_dir: "./outputs/UIEB_fixed/"
   epochs: 800
-  batch_size: 4
-  learning_rate: 0.0003
+  batch_size: 8          # Increased batch size for stability
+  learning_rate: 0.0001  # Reduced learning rate
   weight_decay: 0.0001
-  warmup_epochs: 5
+  warmup_epochs: 10       # More warmup epochs
   save_freq: 10
   eval_freq: 5
   print_freq: 100
-  gradient_clip: 1.0  # Add gradient clipping to prevent exploding gradients
+  gradient_clip: 0.5     # Reduced gradient clipping
 
   optimization:
     optimizer:
       name: "AdamW"
-      lr: 0.0003
+      lr: 0.0001        # Updated to match training lr
       weight_decay: 0.0001
       betas: [0.9, 0.999]
 
