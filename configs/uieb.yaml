@@ -4,7 +4,7 @@ data:
   test_dir: "test"
   input_dir: "raw"
   target_dir: "reference"  
-  image_size: 512
+  image_size: 256
   batch_size: 4
   num_workers: 4
   max_len: 1  
