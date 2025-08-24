@@ -40,7 +40,6 @@ class UIEDataset(data.Dataset):
             return []
         files = []
         for fp in Path(folder).rglob("*"):
-            print(fp.suffix.lower())
             if fp.is_file() and fp.suffix.lower() in self.extensions:
                 files.append(fp)
         return files

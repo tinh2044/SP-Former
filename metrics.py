@@ -29,8 +29,6 @@ def calculate_psnr(img1, img2, max_val=1.0):
 
 def calculate_ssim(img1, img2):
     # SSIM expects (B, C, H, W)
-    img1 = img1.data.cpu().numpy().astype(np.float32)
-    img2 = img2.data.cpu().numpy().astype(np.float32)
     value = 0
     for i in range(img1.shape[0]):
         value += ssim(img1[i], img2[i], data_range=1.0)
@@ -39,8 +37,6 @@ def calculate_ssim(img1, img2):
 
 def calculate_ms_ssim(img1, img2):
     # MS-SSIM expects (B, C, H, W)
-    img1 = img1.data.cpu().numpy().astype(np.float32)
-    img2 = img2.data.cpu().numpy().astype(np.float32)
     value = 0
     for i in range(img1.shape[0]):
         value += ms_ssim(img1[i], img2[i], data_range=1.0)
@@ -50,8 +46,6 @@ def calculate_ms_ssim(img1, img2):
 def calculate_lpips(img1, img2, device="cuda"):
     model = _lpips_model.to(device)
     with torch.no_grad():
-        img1 = img1.data.cpu().numpy().astype(np.float32)
-        img2 = img2.data.cpu().numpy().astype(np.float32)
         value = 0
         for i in range(img1.shape[0]):
             value += model(img1[i], img2[i])
