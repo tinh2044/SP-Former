@@ -8,7 +8,7 @@ import cv2
 import torch
 import torch.nn.functional as F
 
-from net import UIE_model
+from net import SPFormer
 import yaml
 
 
@@ -44,11 +44,11 @@ def crop_to_original(x: torch.Tensor, orig_h: int, orig_w: int) -> torch.Tensor:
     return x[:, :, :orig_h, :orig_w]
 
 
-def load_cfg_model(cfg_path: str, device: torch.device) -> UIE_model:
+def load_cfg_model(cfg_path: str, device: torch.device) -> SPFormer:
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     model_cfg = cfg.get("model", {})
-    model = UIE_model(**model_cfg).to(device)
+    model = SPFormer(**model_cfg).to(device)
     model.eval()
     return model
 
@@ -66,7 +66,7 @@ def clean_state_dict_keys(state_dict):
     return new_sd
 
 
-def load_weights(model: UIE_model, weight_path: str):
+def load_weights(model, weight_path: str):
     ckpt = torch.load(weight_path, map_location="cpu")
     # Try common formats
     if isinstance(ckpt, dict):
@@ -89,7 +89,7 @@ def load_weights(model: UIE_model, weight_path: str):
 
 
 def enhance_image(
-    model: UIE_model, img_bgr: cv2.Mat, device: torch.device, pad_multiple: int = 8
+    model, img_bgr: cv2.Mat, device: torch.device, pad_multiple: int = 8
 ) -> cv2.Mat:
     # Convert BGR uint8 -> RGB float tensor in [0,1]
     if len(img_bgr.shape) == 2:

@@ -73,9 +73,8 @@ class UIEDataset(data.Dataset):
             transform = transforms.Compose(
                 [
                     transforms.Resize((image_size, image_size)),
-                    transforms.RandomHorizontalFlip(p=0.5),
                     transforms.ToTensor(),
-                    # Keep in [0, 1] range for consistency with loss functions
+                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
                 ]
             )
         else:
@@ -83,7 +82,7 @@ class UIEDataset(data.Dataset):
                 [
                     transforms.Resize((image_size, image_size)),
                     transforms.ToTensor(),
-                    # Keep in [0, 1] range for consistency with loss functions
+                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
                 ]
             )
 

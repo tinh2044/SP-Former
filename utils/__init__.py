@@ -228,8 +228,7 @@ def load_checkpoints(model, optimizer, scheduler, path, resume=True):
 
 def save_sample_images(inputs, pred, targets, batch_idx, epoch, output_dir):
     """Save sample images during training"""
-    save_dir = os.path.join(output_dir, "samples", f"epoch_{epoch}")
-    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     # Save first image in batch
     input_img = inputs[0]
@@ -239,7 +238,7 @@ def save_sample_images(inputs, pred, targets, batch_idx, epoch, output_dir):
     # Concatenate images horizontally
     combined = torch.cat([input_img, pred_img, target_img], dim=2)
 
-    filename = os.path.join(save_dir, f"sample_{batch_idx}.png")
+    filename = os.path.join(output_dir, f"sample_{batch_idx}_{epoch}.png")
     save_img(combined, filename)
 
 
