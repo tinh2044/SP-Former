@@ -9,13 +9,11 @@ from pytorch_msssim import SSIM as LossSSIM
 class VGGPerceptualLoss(torch.nn.Module):
     def __init__(self, resize=True):
         super(VGGPerceptualLoss, self).__init__()
-        self.vgg = models.vgg16(pretrained=True)
-        blocks = [
-            self.vgg.features[:4],
-            self.vgg.features[4:9],
-            self.vgg.features[9:16],
-            self.vgg.features[16:23],
-        ]
+        blocks = []
+        blocks.append(models.vgg16(pretrained=True).features[:4].eval())
+        blocks.append(models.vgg16(pretrained=True).features[4:9].eval())
+        blocks.append(models.vgg16(pretrained=True).features[9:16].eval())
+        blocks.append(models.vgg16(pretrained=True).features[16:23].eval())
         for bl in blocks:
             for p in bl.parameters():
                 p.requires_grad = False
