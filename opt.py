@@ -10,6 +10,7 @@ def train_one_epoch(
     model,
     data_loader,
     optimizer,
+    scheduler,
     epoch,
     print_freq=10,
     log_dir="logs",
@@ -23,8 +24,7 @@ def train_one_epoch(
     header = f"Train epoch: [{epoch}]"
 
     # Update learning rate
-    for param_group in optimizer.param_groups:
-        metric_logger.update(lr=param_group["lr"])
+    metric_logger.update(lr=scheduler.get_last_lr()[0])
 
     for batch_idx, batch in enumerate(
         metric_logger.log_every(data_loader, print_freq, header)
@@ -48,7 +48,7 @@ def train_one_epoch(
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
         optimizer.step()
-
+        scheduler.step()
         for loss_name, loss_value in loss.items():
             metric_logger.update(**{f"{loss_name}_loss": loss_value.item()})
 

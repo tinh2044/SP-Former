@@ -163,6 +163,8 @@ def main(args, cfg):
         last_epoch=scheduler_last_epoch,
     )
 
+    print(f"Scheduler type: {scheduler_type}")
+
     # Load optimizer and scheduler state if resuming
     if args.resume:
         if (
@@ -216,6 +218,7 @@ def main(args, cfg):
             model,
             train_dataloader,
             optimizer,
+            scheduler,
             epoch,
             print_freq=args.print_freq,
             log_dir=f"{log_dir}/train",
