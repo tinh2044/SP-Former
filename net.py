@@ -369,7 +369,7 @@ class SPFormer(nn.Module):
 
         self.loss_fn = UnderwaterLosses(**(loss_cfg if loss_cfg else {}))
 
-    def forward(self, inp, gt=None):
+    def forward(self, inp):
         if inp is None:
             raise ValueError("inp is None")
         e1 = self.patch_embed(inp)
@@ -403,11 +403,7 @@ class SPFormer(nn.Module):
         dec1 = self.decoder1(cat1)
         dec1 = self.refine(dec1)
         out = self.out_conv(dec1)
-        if gt is not None:
-            loss = self.loss_fn(out, gt)
-        else:
-            loss = None
-        return {"output": out, "loss": loss, "gt": gt}
+        return out
 
 
 if __name__ == "__main__":
@@ -422,8 +418,5 @@ if __name__ == "__main__":
     print(f"SPFormer total trainable parameters: {p:,}")
     x = torch.randn(1, 3, 256, 256)
     y = torch.randn(1, 3, 256, 256)
-    out = model(x, y)
-    print("Output shape:", out["output"].shape)
-
-    for k, v in out["loss"].items():
-        print(f"{k}: {v.item()}")
+    out = model(x)
+    print("Output shape:", out.shape)
