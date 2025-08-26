@@ -18,6 +18,7 @@ from dataset import get_training_set, get_test_set
 from net import SPFormer
 from opt import train_one_epoch, evaluate_fn
 import utils
+from loss import UnderwaterLosses
 
 
 def get_args_parser():
@@ -107,6 +108,8 @@ def main(args, cfg):
     model = model.to(device)
     n_parameters = utils.count_model_parameters(model)
 
+    loss_fn = UnderwaterLosses(**cfg["model"]["loss_cfg"]).to(device)
+
     print(f"Number of parameters: {n_parameters:,}")
 
     input_shape = (args.batch_size, 3, cfg_data["image_size"], cfg_data["image_size"])
@@ -194,9 +197,9 @@ def main(args, cfg):
             args,
             test_dataloader,
             model,
+            loss_fn,
             epoch=0,
             print_freq=args.print_freq,
-            results_path=f"{model_dir}/test_results.json",
             log_dir=f"{log_dir}/eval/test",
         )
         print(
@@ -218,6 +221,7 @@ def main(args, cfg):
             args,
             model,
             train_dataloader,
+            loss_fn,
             optimizer,
             scheduler,
             epoch,
@@ -250,6 +254,7 @@ def main(args, cfg):
                 args,
                 test_dataloader,
                 model,
+                loss_fn,
                 epoch,
                 print_freq=args.print_freq,
                 log_dir=f"{log_dir}/test",

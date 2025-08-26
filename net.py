@@ -345,8 +345,6 @@ class SPFormer(nn.Module):
         d1r = d1r + sbm1
 
         out = self.final_conv(d1r)
-        # residual add to input RGB
-        out = torch.clamp(out + x, 0.0, 1.0)
         return out
 
 

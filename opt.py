@@ -9,6 +9,7 @@ def train_one_epoch(
     args,
     model,
     data_loader,
+    loss_fn,
     optimizer,
     scheduler,
     epoch,
@@ -35,10 +36,9 @@ def train_one_epoch(
             raise ValueError("inputs is None")
         if targets is None:
             raise ValueError("targets is None")
-        outputs = model(inputs, targets)
+        pred_l = model(inputs)
 
-        pred_l = outputs["output"]
-        loss = outputs["loss"]
+        loss = loss_fn(pred_l, targets)
         total_loss = loss["total"]
 
         optimizer.zero_grad()
@@ -76,7 +76,13 @@ def train_one_epoch(
 
 
 def evaluate_fn(
-    args, data_loader, model, epoch, print_freq=100, results_path=None, log_dir="logs"
+    args,
+    data_loader,
+    model,
+    loss_fn,
+    epoch,
+    print_freq=100,
+    log_dir="logs",
 ):
     """Evaluate model"""
     model.eval()
@@ -93,14 +99,17 @@ def evaluate_fn(
             filenames = batch["filenames"]
 
             # Forward pass
-            outputs = model(inputs)
-            pred_l = outputs["output"]
+            pred_l = model(inputs)
+            loss = loss_fn(pred_l, targets)
 
             # Compute metrics
             metrics = compute_metrics(targets, pred_l, args.device)
 
             for metric_name, metric_value in metrics.items():
                 metric_logger.update(**{f"{metric_name}": metric_value})
+
+            for loss_name, loss_value in loss.items():
+                metric_logger.update(**{f"{loss_name}_loss": loss_value.item()})
 
             if args.save_images:
                 save_eval_images(
