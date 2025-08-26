@@ -1,152 +1,110 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from loss import UnderwaterLosses
+
+def conv1x1(in_ch, out_ch, bias=True, groups=1):
+    return nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=bias, groups=groups)
 
 
-def conv3x3(in_ch, out_ch, stride=1, bias=False):
-    return nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=stride, padding=1, bias=bias)
-
-
-def conv1x1(in_ch, out_ch, bias=False):
-    return nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=bias)
+def conv3x3(in_ch, out_ch, stride=1, padding=1, bias=True, groups=1):
+    return nn.Conv2d(
+        in_ch,
+        out_ch,
+        kernel_size=3,
+        stride=stride,
+        padding=padding,
+        bias=bias,
+        groups=groups,
+    )
 
 
 class LayerNorm2d(nn.Module):
-    def __init__(self, num_channels, eps=1e-5):
+    def __init__(self, num_channels, eps=1e-6):
         super().__init__()
-        self.ln = nn.LayerNorm(num_channels, eps=eps)
+        self.norm = nn.LayerNorm(num_channels, eps=eps)
 
     def forward(self, x):
+        # x: B,C,H,W -> transpose to B,H,W,C
         b, c, h, w = x.shape
-        x = x.permute(0, 2, 3, 1).contiguous()
-        x = self.ln(x)
-        x = x.permute(0, 3, 1, 2).contiguous()
-        return x
+        x_t = x.permute(0, 2, 3, 1).contiguous()
+        x_t = self.norm(x_t)
+        return x_t.permute(0, 3, 1, 2).contiguous()
 
 
 class LinearAttention(nn.Module):
-    def __init__(
-        self,
-        chan,
-        chan_out=None,
-        kernel_size=1,
-        padding=0,
-        stride=1,
-        key_dim=64,
-        value_dim=64,
-        heads=8,
-        norm_queries=True,
-    ):
+    def __init__(self, dim, heads=4, head_dim=None):
         super().__init__()
-        self.chan = chan
-        chan_out = chan if chan_out is None else chan_out
-
-        self.key_dim = key_dim
-        self.value_dim = value_dim
+        self.dim = dim
         self.heads = heads
+        if head_dim is None:
+            assert dim % heads == 0
+            head_dim = dim // heads
+        self.head_dim = head_dim
+        inner_dim = heads * head_dim
 
-        self.norm_queries = norm_queries
+        self.to_q = conv1x1(dim, inner_dim, bias=False)
+        self.to_k = conv1x1(dim, inner_dim, bias=False)
+        self.to_v = conv1x1(dim, inner_dim, bias=False)
+        self.to_out = conv1x1(inner_dim, dim)
 
-        conv_kwargs = {"padding": padding, "stride": stride}
-        self.to_q = nn.Conv2d(chan, key_dim * heads, kernel_size, **conv_kwargs)
-        self.to_k = nn.Conv2d(chan, key_dim * heads, kernel_size, **conv_kwargs)
-        self.to_v = nn.Conv2d(chan, value_dim * heads, kernel_size, **conv_kwargs)
+    def phi(self, x):
+        return F.elu(x) + 1.0
 
-        out_conv_kwargs = {"padding": padding}
-        self.to_out = nn.Conv2d(
-            value_dim * heads, chan_out, kernel_size, **out_conv_kwargs
-        )
+    def forward(self, x):
+        b, c, h, w = x.shape
+        n = h * w
+        q = self.to_q(x).reshape(b, self.heads, self.head_dim, n)
+        k = self.to_k(x).reshape(b, self.heads, self.head_dim, n)
+        v = self.to_v(x).reshape(b, self.heads, self.head_dim, n)
 
-        self.norm_q = nn.LayerNorm(key_dim)
-        self.norm_k = nn.LayerNorm(key_dim)
-        self.norm_v = nn.LayerNorm(value_dim)
+        q = self.phi(q)
+        k = self.phi(k)
 
-    def forward(self, x, context=None):
-        b, c, h, w, k_dim, heads = *x.shape, self.key_dim, self.heads
+        KV = torch.einsum("b h d n, b h e n -> b h d e", k, v)
+        out = torch.einsum("b h d n, b h d e -> b h e n", q, KV)
 
-        q, k, v = (self.to_q(x), self.to_k(x), self.to_v(x))
-
-        q, k, v = map(lambda t: t.reshape(b, heads, -1, h * w), (q, k, v))
-
-        q = self.norm_q(q.transpose(-1, -2)).transpose(-1, -2)
-        k = self.norm_k(k.transpose(-1, -2)).transpose(-1, -2)
-        v = self.norm_v(v.transpose(-1, -2)).transpose(-1, -2)
-
-        q, k = map(lambda x: x * (self.key_dim**-0.25), (q, k))
-
-        if context is not None:
-            context = context.reshape(b, c, 1, -1)
-            ck, cv = self.to_k(context), self.to_v(context)
-            ck, cv = map(lambda t: t.reshape(b, heads, k_dim, -1), (ck, cv))
-            k = torch.cat((k, ck), dim=3)
-            v = torch.cat((v, cv), dim=3)
-
-        k = k.softmax(dim=-1)
-
-        if self.norm_queries:
-            q = q.softmax(dim=-2)
-
-        context = torch.einsum("bhdn,bhen->bhde", k, v)
-        out = torch.einsum("bhdn,bhde->bhen", q, context)
         out = out.reshape(b, -1, h, w)
         out = self.to_out(out)
         return out
 
 
 class GatedDSFFN(nn.Module):
-    def __init__(self, dim, expansion=2.0, bias=False):
+    def __init__(self, dim, expansion=2.0, dw_kernel=3):
         super().__init__()
-        hidden = int(dim * expansion)
-        self.pw1 = conv1x1(dim, hidden * 2, bias=bias)
+        hidden = max(1, int(dim * expansion))
+        self.pw1 = conv1x1(dim, hidden * 2, bias=True)
         self.dw = nn.Conv2d(
-            hidden * 2,
-            hidden * 2,
-            kernel_size=3,
-            padding=1,
-            groups=hidden * 2,
-            bias=bias,
+            hidden,
+            hidden,
+            kernel_size=dw_kernel,
+            padding=dw_kernel // 2,
+            groups=hidden,
+            bias=True,
         )
-        self.pw2 = conv1x1(hidden, dim, bias=bias)
+        self.pw2 = conv1x1(hidden, dim, bias=True)
         self.act = nn.GELU()
 
     def forward(self, x):
-        u = self.pw1(x)
-        u = self.dw(u)
-        a, b = u.chunk(2, dim=1)
-        out = a * self.act(b)
-        return self.pw2(out)
+        b, c, h, w = x.shape
+        y = self.pw1(x)
+        y1, y2 = y.chunk(2, dim=1)
+        y1 = self.act(y1)
+        y1 = self.dw(y1)
+        y = y1 * torch.sigmoid(y2)
+        y = self.pw2(y)
+        return y
 
 
 class TransformerBlockLite(nn.Module):
-    def __init__(
-        self,
-        dim,
-        num_heads=1,
-        ffn_expansion=2.0,
-        key_dim=None,
-        value_dim=None,
-        norm_queries=True,
-    ):
+    def __init__(self, dim, heads=4, head_dim=None, ffn_expansion=2.0):
         super().__init__()
         self.norm1 = LayerNorm2d(dim)
+        self.attn = LinearAttention(dim, heads=heads, head_dim=head_dim)
         self.norm2 = LayerNorm2d(dim)
         self.ffn = GatedDSFFN(dim, expansion=ffn_expansion)
-
-        if key_dim is None:
-            key_dim = max(32, dim // 8)
-        if value_dim is None:
-            value_dim = key_dim
-
-        self.attn = LinearAttention(
-            chan=dim,
-            chan_out=dim,
-            key_dim=key_dim,
-            value_dim=value_dim,
-            heads=num_heads,
-            norm_queries=norm_queries,
-        )
 
     def forward(self, x):
         x = x + self.attn(self.norm1(x))
@@ -154,276 +112,255 @@ class TransformerBlockLite(nn.Module):
         return x
 
 
-class Downsample(nn.Module):
-    def __init__(self, n_feat):
+class GroupCorr(nn.Module):
+    def __init__(self, in_ch, groups=4, proj=True):
         super().__init__()
-        self.body = nn.Sequential(
-            conv3x3(n_feat, n_feat // 2, bias=False),
-            nn.PixelUnshuffle(2),
+        self.groups = groups
+        self.group_ch = in_ch // groups
+        self.proj = proj
+        if proj:
+            self.to_q = conv1x1(in_ch, in_ch, bias=False)
+            self.to_k = conv1x1(in_ch, in_ch, bias=False)
+        self.temperature = nn.Parameter(torch.ones(1) * 1.0)
+
+    def forward(self, feat, guidance):
+        b, c, h, w = feat.shape
+        g = self.groups
+        fq = self.to_q(guidance) if self.proj else guidance
+        fk = self.to_k(feat) if self.proj else feat
+        fq = fq.reshape(b, g, self.group_ch, h * w)
+        fk = fk.reshape(b, g, self.group_ch, h * w)
+        desc = fq.mean(-1, keepdim=True)
+        sim = torch.einsum("bgci,bgcn->bgin", desc, fk) / (
+            math.sqrt(self.group_ch) * self.temperature
+        )
+        attn = F.softmax(sim, dim=-1)
+        out_g = torch.einsum("bgin,bgcn->bgci", attn, fk)
+        out = out_g.reshape(b, c, 1, 1)
+        out = out.expand(-1, -1, h, w)
+        return out
+
+
+class SpectralBankModule(nn.Module):
+    def __init__(
+        self, feat_ch, guidance_ch=3, bands=4, bank_kernel=3, groups=4, share_fuse=False
+    ):
+        super().__init__()
+        self.bands = bands
+        self.feat_ch = feat_ch
+        self.groups = groups
+        self.banks = nn.ModuleList()
+        for _ in range(bands):
+            self.banks.append(
+                nn.Sequential(
+                    nn.Conv2d(
+                        guidance_ch,
+                        guidance_ch,
+                        kernel_size=bank_kernel,
+                        padding=bank_kernel // 2,
+                        groups=guidance_ch,
+                        bias=False,
+                    ),
+                    conv1x1(guidance_ch, feat_ch),
+                )
+            )
+        self.mask_conv = nn.Sequential(
+            conv3x3(feat_ch * bands, feat_ch, bias=True),
+            nn.ReLU(inplace=True),
+            conv1x1(feat_ch, feat_ch),
+        )
+        self.separable_fuse = nn.Sequential(
+            nn.Conv2d(
+                feat_ch, feat_ch, kernel_size=3, padding=1, groups=feat_ch, bias=False
+            ),
+            conv1x1(feat_ch, feat_ch, bias=True),
+        )
+        self.groupcorr = GroupCorr(feat_ch, groups=groups, proj=True)
+
+    def forward(self, feat, guidance):
+        guidance_resized = F.interpolate(
+            guidance, size=feat.shape[2:], mode="bilinear", align_corners=False
         )
 
-    def forward(self, x):
-        return self.body(x)
+        band_outs = []
+        for bank in self.banks:
+            r = bank(guidance_resized)
+            band_outs.append(r)
+        cat = torch.cat(band_outs, dim=1)
+        masks = self.mask_conv(cat)  # B, feat_ch, H, W
 
-
-class Upsample(nn.Module):
-    def __init__(self, n_feat):
-        super().__init__()
-        self.body = nn.Sequential(
-            conv3x3(n_feat, n_feat * 2, bias=False),
-            nn.PixelShuffle(2),
+        energies = torch.stack(
+            [m.mean(dim=1, keepdim=True) for m in band_outs], dim=1
+        )  # B, bands, 1, H, W
+        weights = F.softmax(
+            energies.view(energies.shape[0], energies.shape[1], -1).mean(-1), dim=1
         )
+        weights = weights.view(weights.shape[0], weights.shape[1], 1, 1, 1)
+        banks_stack = torch.stack(band_outs, dim=1)  # B,bands,C,H,W
+        recomposed = (weights * banks_stack).sum(dim=1)  # B,C,H,W
 
-    def forward(self, x):
-        return self.body(x)
+        fused = recomposed * torch.sigmoid(masks)
+
+        corr = self.groupcorr(feat, recomposed)
+        fused = fused + corr
+
+        fused = self.separable_fuse(fused)
+        return fused
 
 
 class PatchEmbed(nn.Module):
-    def __init__(self, in_ch=3, embed_dim=36):
+    def __init__(self, in_ch=3, out_ch=36):
         super().__init__()
-        self.proj = conv3x3(in_ch, embed_dim, bias=False)
+        self.proj = conv3x3(in_ch, out_ch)
 
     def forward(self, x):
         return self.proj(x)
 
 
-class GroupCorr(nn.Module):
-    def __init__(self, dim, groups=4, bias=False):
+class Downsample(nn.Module):
+    def __init__(self, in_ch, out_ch):
         super().__init__()
-        assert dim % groups == 0
-        self.groups = groups
-        self.dim = dim
-        self.gdim = dim // groups
-        self.q = conv1x1(dim, dim, bias=bias)
-        self.k = conv1x1(dim, dim, bias=bias)
-        self.v = conv1x1(dim, dim, bias=bias)
-        self.out = conv1x1(dim, dim, bias=bias)
-        self.norm = nn.Softmax(dim=-1)
+        self.conv = conv3x3(in_ch, out_ch, stride=2)
 
-    def forward(self, x, y):
-        b, c, h, w = x.shape
-        n = h * w
-        q = self.q(x).view(b, self.groups, self.gdim, n)
-        k = self.k(y).view(b, self.groups, self.gdim, n)
-        v = self.v(y).view(b, self.groups, self.gdim, n)
-        k_desc = k.mean(-1, keepdim=True)
-        att = torch.einsum("b g c n, b g c d -> b g d n", q, k_desc)
-        att = self.norm(att.view(b, -1)).view(b, self.groups, 1, n)
-        out = att * v
-        out = out.view(b, c, h, w)
-        return self.out(out)
+    def forward(self, x):
+        return self.conv(x)
 
 
-class SpectralBankModule(nn.Module):
-    def __init__(self, in_ch, feat_ch, bands=4, bias=False):
+class Upsample(nn.Module):
+    def __init__(self, in_ch, out_ch):
         super().__init__()
-        self.proj_in = conv3x3(in_ch, feat_ch, bias=bias)
-        self.bank = nn.Conv2d(
-            feat_ch,
-            feat_ch * bands,
-            kernel_size=3,
-            padding=1,
-            groups=feat_ch,
-            bias=bias,
-        )
-        self.mask_pred = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            conv1x1(feat_ch, max(4, bands), bias=bias),
-            nn.Sigmoid(),
-        )
-        self.fuse = conv1x1(feat_ch, feat_ch, bias=bias)
-        self.beta_head = nn.Sequential(conv1x1(feat_ch, 3, bias=bias), nn.ReLU())
-        self.A_head = nn.Sequential(conv1x1(feat_ch, 3, bias=bias), nn.Sigmoid())
-        self.gcorr = GroupCorr(feat_ch, groups=4, bias=bias)
-        self.jproj = conv1x1(3, feat_ch, bias=bias)
-        self.bands = bands
+        # Upsample + conv to reduce params (instead of convtranspose)
+        self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
+        self.conv = conv3x3(in_ch, out_ch)
 
-    def forward(self, guidance, feat):
-        b, c, hf, wf = feat.shape
-        guidance_resize = F.interpolate(
-            guidance, size=(hf, wf), mode="bilinear", align_corners=False
-        )
-        tilde = self.proj_in(guidance_resize)
-        bank_resp = self.bank(tilde).view(b, tilde.size(1), self.bands, hf, wf)
-        bank_mag = torch.abs(bank_resp)
-        mask = self.mask_pred(tilde)
-        if mask.shape[1] > self.bands:
-            mask = mask[:, : self.bands, :, :]
-        elif mask.shape[1] < self.bands:
-            pad = torch.ones(
-                b,
-                self.bands - mask.shape[1],
-                1,
-                1,
-                device=mask.device,
-                dtype=mask.dtype,
-            )
-            mask = torch.cat([mask, pad], dim=1)
-        mask = mask.view(b, 1, self.bands, 1, 1)
-        recomposed = (bank_mag * mask).sum(dim=2)
-        recomposed = self.fuse(recomposed)
-        beta = self.beta_head(tilde)
-        A = self.A_head(tilde)
-        eps = 1e-6
-        t = torch.exp(-beta)  # transmission map
-
-        if guidance_resize.shape[1] >= 3:
-            I_rgb = guidance_resize[:, :3, :, :]
-            J_approx = (I_rgb - A * (1 - t)) / (t + eps)
-            Jdesc = F.adaptive_avg_pool2d(J_approx, 1)
-            Jdesc = self.jproj(Jdesc)
-            Jdesc = Jdesc.expand(-1, feat.size(1), hf, wf)
-            fused = self.gcorr(recomposed, (feat + Jdesc))
-        else:
-            fused = self.gcorr(recomposed, feat)
-
-        return fused
+    def forward(self, x):
+        x = self.up(x)
+        x = self.conv(x)
+        return x
 
 
 class SPFormer(nn.Module):
     def __init__(
         self,
-        inp_channels=3,
-        out_channels=3,
-        d=36,
-        num_blocks=[2, 2, 2, 3],
-        num_refinement=2,
-        heads=[2, 4, 4, 8],
-        ffn_exp=2.0,
-        loss_cfg=None,
-        key_dim=None,
-        value_dim=None,
-        norm_queries=True,
+        base_ch=20,
+        blocks=[2, 2, 2, 2],
+        heads=[2, 4, 8, 8],
+        ffn_expansion=1.5,
+        bands=4,
+        **kwargs,
     ):
         super().__init__()
-        self.patch_embed = PatchEmbed(in_ch=inp_channels, embed_dim=d)
-        block_kwargs = {
-            "ffn_expansion": ffn_exp,
-            "key_dim": key_dim,
-            "value_dim": value_dim,
-            "norm_queries": norm_queries,
-        }
+        d = base_ch
 
-        self.encoder1 = nn.Sequential(
+        c1, c2, c3, c4 = d, d * 2, d * 4, d * 8
+        self.patch = PatchEmbed(3, c1)
+
+        self.enc1 = nn.Sequential(
             *[
-                TransformerBlockLite(dim=d, num_heads=heads[0], **block_kwargs)
-                for _ in range(num_blocks[0])
+                TransformerBlockLite(c1, heads=heads[0], ffn_expansion=ffn_expansion)
+                for _ in range(blocks[0])
             ]
         )
-        self.down1 = Downsample(d)
-        self.encoder2 = nn.Sequential(
+        self.down1 = Downsample(c1, c2)
+        self.enc2 = nn.Sequential(
             *[
-                TransformerBlockLite(dim=2 * d, num_heads=heads[1], **block_kwargs)
-                for _ in range(num_blocks[1])
+                TransformerBlockLite(c2, heads=heads[1], ffn_expansion=ffn_expansion)
+                for _ in range(blocks[1])
             ]
         )
-        self.down2 = Downsample(2 * d)
-        self.encoder3 = nn.Sequential(
+        self.down2 = Downsample(c2, c3)
+        self.enc3 = nn.Sequential(
             *[
-                TransformerBlockLite(dim=4 * d, num_heads=heads[2], **block_kwargs)
-                for _ in range(num_blocks[2])
+                TransformerBlockLite(c3, heads=heads[2], ffn_expansion=ffn_expansion)
+                for _ in range(blocks[2])
             ]
         )
-        self.down3 = Downsample(4 * d)
-        self.latent = nn.Sequential(
+        self.down3 = Downsample(c3, c4)
+
+        self.latent_blocks = nn.Sequential(
             *[
-                TransformerBlockLite(dim=8 * d, num_heads=heads[3], **block_kwargs)
-                for _ in range(num_blocks[3])
-            ]
-        )
-        self.sbm4 = SpectralBankModule(in_ch=inp_channels, feat_ch=8 * d, bands=4)
-        self.up4_3 = Upsample(8 * d)
-        self.reduce3 = conv1x1(8 * d, 4 * d)
-        self.decoder3 = nn.Sequential(
-            *[
-                TransformerBlockLite(dim=4 * d, num_heads=heads[2], **block_kwargs)
-                for _ in range(num_blocks[2])
-            ]
-        )
-        self.sbm3 = SpectralBankModule(in_ch=inp_channels, feat_ch=4 * d, bands=4)
-        self.up3_2 = Upsample(4 * d)
-        self.reduce2 = conv1x1(4 * d, 2 * d)
-        self.decoder2 = nn.Sequential(
-            *[
-                TransformerBlockLite(dim=2 * d, num_heads=heads[1], **block_kwargs)
-                for _ in range(num_blocks[1])
-            ]
-        )
-        self.sbm2 = SpectralBankModule(in_ch=inp_channels, feat_ch=2 * d, bands=3)
-        self.up2_1 = Upsample(2 * d)
-        self.reduce1 = conv1x1(2 * d, d)
-        self.decoder1 = nn.Sequential(
-            *[
-                TransformerBlockLite(dim=d, num_heads=heads[0], **block_kwargs)
-                for _ in range(num_blocks[0])
+                TransformerBlockLite(c4, heads=heads[3], ffn_expansion=ffn_expansion)
+                for _ in range(blocks[3])
             ]
         )
 
-        self.refine = nn.Sequential(
+        self.sbm_latent = SpectralBankModule(c4, guidance_ch=3, bands=bands, groups=4)
+
+        self.up3 = Upsample(c4, c3)
+        self.dec3 = nn.Sequential(
             *[
-                TransformerBlockLite(dim=d, num_heads=heads[0], **block_kwargs)
-                for _ in range(num_refinement)
+                TransformerBlockLite(c3, heads=heads[2], ffn_expansion=ffn_expansion)
+                for _ in range(blocks[2])
             ]
         )
-        self.out_conv = conv3x3(d, out_channels, bias=False)
+        self.sbm3 = SpectralBankModule(c3, guidance_ch=3, bands=bands, groups=4)
 
-        self.loss_fn = UnderwaterLosses(**(loss_cfg if loss_cfg else {}))
+        self.up2 = Upsample(c3, c2)
+        self.dec2 = nn.Sequential(
+            *[
+                TransformerBlockLite(c2, heads=heads[1], ffn_expansion=ffn_expansion)
+                for _ in range(blocks[1])
+            ]
+        )
+        self.sbm2 = SpectralBankModule(c2, guidance_ch=3, bands=bands, groups=4)
 
-    def forward(self, inp, gt=None):
-        if inp is None:
-            raise ValueError("inp is None")
-        e1 = self.patch_embed(inp)
-        en1 = self.encoder1(e1)
-        d12 = self.down1(en1)
-        en2 = self.encoder2(d12)
-        d23 = self.down2(en2)
-        en3 = self.encoder3(d23)
-        d34 = self.down3(en3)
-        lat = self.latent(d34)
+        self.up1 = Upsample(c2, c1)
+        self.dec1 = nn.Sequential(
+            *[
+                TransformerBlockLite(c1, heads=heads[0], ffn_expansion=ffn_expansion)
+                for _ in range(blocks[0])
+            ]
+        )
+        self.sbm1 = SpectralBankModule(c1, guidance_ch=3, bands=bands, groups=4)
 
-        lat_update = self.sbm4(inp, lat)
-        lat = lat + lat_update
+        self.final_conv = conv3x3(c1, 3)
 
-        u3 = self.up4_3(lat)
-        cat3 = self.reduce3(torch.cat([u3, en3], dim=1))
-        dec3 = self.decoder3(cat3)
+    def forward(self, x):
+        bgr = x
+        p = self.patch(x)
+        e1 = self.enc1(p)
+        d1 = self.down1(e1)
+        e2 = self.enc2(d1)
+        d2 = self.down2(e2)
+        e3 = self.enc3(d2)
+        d3 = self.down3(e3)
 
-        dec3_update = self.sbm3(inp, dec3)
-        dec3 = dec3 + dec3_update
+        latent = self.latent_blocks(d3)
+        sbm_lat = self.sbm_latent(latent, bgr)
+        latent = latent + sbm_lat
 
-        u2 = self.up3_2(dec3)
-        cat2 = self.reduce2(torch.cat([u2, en2], dim=1))
-        dec2 = self.decoder2(cat2)
+        u3 = self.up3(latent) + e3
+        d3r = self.dec3(u3)
+        sbm3 = self.sbm3(d3r, bgr)
+        d3r = d3r + sbm3
 
-        dec2_update = self.sbm2(inp, dec2)
-        dec2 = dec2 + dec2_update
+        u2 = self.up2(d3r) + e2
+        d2r = self.dec2(u2)
+        sbm2 = self.sbm2(d2r, bgr)
+        d2r = d2r + sbm2
 
-        u1 = self.up2_1(dec2)
-        cat1 = self.reduce1(torch.cat([u1, en1], dim=1))
-        dec1 = self.decoder1(cat1)
-        dec1 = self.refine(dec1)
-        out = self.out_conv(dec1)
-        if gt is not None:
-            loss = self.loss_fn(out, gt)
-        else:
-            loss = None
-        return {"output": out, "loss": loss, "gt": gt}
+        u1 = self.up1(d2r) + e1
+        d1r = self.dec1(u1)
+        sbm1 = self.sbm1(d1r, bgr)
+        d1r = d1r + sbm1
+
+        out = self.final_conv(d1r)
+        # residual add to input RGB
+        out = torch.clamp(out + x, 0.0, 1.0)
+        return out
+
+
+def count_parameters(model: nn.Module) -> int:
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 if __name__ == "__main__":
+    # quick smoke test and parameter print
     model = SPFormer(
-        d=24,
-        num_blocks=[2, 2, 2, 3],
-        num_refinement=4,
-        heads=[1, 2, 2, 4],
-        ffn_exp=2.0,
+        base_ch=20, blocks=[2, 2, 2, 2], heads=[2, 4, 8, 8], ffn_expansion=1.5, bands=4
     )
-    p = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"SPFormer total trainable parameters: {p:,}")
     x = torch.randn(1, 3, 256, 256)
-    y = torch.randn(1, 3, 256, 256)
-    out = model(x, y)
-    print("Output shape:", out["output"].shape)
-
-    for k, v in out["loss"].items():
-        print(f"{k}: {v.item()}")
+    with torch.no_grad():
+        y = model(x)
+    print("Output shape:", y.shape)
+    print("Params:", count_parameters(model))

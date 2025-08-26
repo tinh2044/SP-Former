@@ -5,7 +5,7 @@ datasets/
 docs/
 logs/
 log_module/
-outputs/
+output*/
 *.txt
 Relatedwork/
 Mermaid/

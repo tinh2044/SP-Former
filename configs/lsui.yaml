@@ -1,9 +1,9 @@
 data:
-  root: "./datasets/UIEB/"
+  root: "./datasets/LSUI/"
   train_dir: "train"
   test_dir: "test"
-  input_dir: "raw"
-  target_dir: "reference"  
+  input_dir: "input"
+  target_dir: "GT"  
   image_size: 256
   max_len: 1  
 
@@ -14,30 +14,27 @@ model:
   num_blocks: [2, 2, 2, 3] 
   num_refinement: 2       
   heads: [2, 4, 8, 16]    
-  ffn_exp: 2.0          
+  ffn_exp: 1.5          
   
   loss_cfg:
     weights:
-      l1: 1.0
-      perc: 0.05
-      ssim: 2.0
-      grad: 0.8              
+      l1: 1.0             
+      perc: 0.01          
+      ssim: 1.0        
+      grad: 0.5        
 
 training:
-  model_dir: "./outputs_UIEB"
-  warmup_epochs: 15       
-  gradient_clip: 1.0     
-
+  model_dir: "./outputs_LSUI"
   optimization:
     optimizer:
       name: "AdamW"
-      lr: 0.0002      
+      lr: 0.0001       
       weight_decay: 0.0001
       betas: [0.9, 0.999]
 
     scheduler:
       name: "CosineAnnealingLR"
-      T_max: 1000
+      T_max: 800
       eta_min: 0.00001
 
 evaluation:

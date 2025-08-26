@@ -24,7 +24,7 @@ def get_args_parser():
     parser = argparse.ArgumentParser(
         "Underwater Image Restoration Training", add_help=False
     )
-    parser.add_argument("--batch-size", default=4, type=int)
+    parser.add_argument("--batch-size", default=1, type=int)
     parser.add_argument("--epochs", default=800, type=int)
 
     parser.add_argument("--finetune", default="", help="finetune from checkpoint")
@@ -38,7 +38,7 @@ def get_args_parser():
     parser.add_argument("--local_rank", default=0, type=int)
 
     parser.add_argument(
-        "--device", default="cuda", help="device to use for training / testing"
+        "--device", default="cpu", help="device to use for training / testing"
     )
     parser.add_argument("--seed", default=42, type=int)
     parser.add_argument("--resume", default="", help="resume from checkpoint")
@@ -49,13 +49,13 @@ def get_args_parser():
     parser.add_argument("--num_workers", default=4, type=int)
 
     parser.add_argument(
-        "--cfg_path",
+        "--cfg",
         type=str,
         default="configs/uieb.yaml",
         help="Path to config file",
     )
 
-    parser.add_argument("--print_freq", default=100, type=int, help="print frequency")
+    parser.add_argument("--print_freq", default=1, type=int, help="print frequency")
     parser.add_argument(
         "--eval_in_train", default=False, type=bool, help="eval in train"
     )
@@ -107,7 +107,7 @@ def main(args, cfg):
     model = model.to(device)
     n_parameters = utils.count_model_parameters(model)
 
-    print(f"Number of parameters: {n_parameters}")
+    print(f"Number of parameters: {n_parameters:,}")
 
     input_shape = (args.batch_size, 3, cfg_data["image_size"], cfg_data["image_size"])
     model_info = utils.get_model_info(model, input_shape, device)
@@ -180,6 +180,7 @@ def main(args, cfg):
 
     args.output_dir = model_dir
     args.save_images = cfg["evaluation"]["save_images"]
+    args.gradient_clip = cfg["training"].get("gradient_clip", 1.0)
 
     output_dir = Path(cfg["training"]["model_dir"])
 
@@ -296,7 +297,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    with open(args.cfg_path, "r+", encoding="utf-8") as f:
+    with open(args.cfg, "r+", encoding="utf-8") as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
 
     Path(config["training"]["model_dir"]).mkdir(parents=True, exist_ok=True)
