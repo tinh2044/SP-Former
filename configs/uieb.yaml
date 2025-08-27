@@ -10,9 +10,9 @@ data:
 model:
   inp_channels: 3
   out_channels: 3
-  d: 16                  
+  d: 20                  
   num_blocks: [2, 2, 2, 3] 
-  num_refinement: 2       
+  num_refinement: 4       
   heads: [2, 4, 8, 16]    
   ffn_exp: 2.0          
   
