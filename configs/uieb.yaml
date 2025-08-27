@@ -31,8 +31,8 @@ training:
   optimization:
     optimizer:
       name: "AdamW"
-      lr: 2e-4      
-      weight_decay: 2e-5
+      lr: 0.0002     
+      weight_decay: 0.00005
       betas: [0.9, 0.999]
 
     scheduler:
