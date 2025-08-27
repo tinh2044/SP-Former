@@ -1,0 +1,43 @@
+data:
+  root: "./datasets/LSUI/"
+  train_dir: "train"
+  test_dir: "test"
+  input_dir: "input"
+  target_dir: "GT"  
+  image_size: 256
+  max_len: 1  
+
+model:
+  inp_channels: 3
+  out_channels: 3
+  d: 16                 
+  num_blocks: [2, 2, 2, 2] 
+  num_refinement: 2       
+  heads: [2, 4, 8, 16]    
+  ffn_exp: 1.5          
+  
+  loss_cfg:
+    weights:
+      l1: 1.0             
+      perc: 0.01          
+      ssim: 1.0        
+      grad: 0.5        
+
+training:
+  model_dir: "./outputs_LSUI"
+  optimization:
+    optimizer:
+      name: "AdamW"
+      lr: 0.0001       
+      weight_decay: 0.0001
+      betas: [0.9, 0.999]
+
+    scheduler:
+      name: "CosineAnnealingLR"
+      T_max: 800
+      eta_min: 0.00001
+
+evaluation:
+  metrics: ["psnr", "ssim", "lpips"]
+  save_images: true
+  save_high_res: false 
