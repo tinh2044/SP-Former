@@ -12,7 +12,7 @@ data:
 model:
   inp_channels: 3
   out_channels: 3
-  d: 36                    
+  d: 16                    
   num_blocks: [2, 2, 2, 3] 
   num_refinement: 2       
   heads: [2, 4, 8, 16]    
