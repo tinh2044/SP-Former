@@ -1,15 +1,16 @@
 import argparse
 import os
 import glob
-import math
 from typing import List
+from PIL import Image
 
 import cv2
 import torch
-import torch.nn.functional as F
+import torchvision.transforms as transforms
 
 from net import SPFormer
 import yaml
+from utils import save_img
 
 
 def is_image_file(path: str) -> bool:
@@ -26,22 +27,6 @@ def list_images(input_path: str) -> List[str]:
             paths.extend(glob.glob(os.path.join(input_path, ext)))
         return sorted(paths)
     return []
-
-
-def pad_to_multiple(x: torch.Tensor, multiple: int) -> (torch.Tensor, int, int):
-    # x: 1xCxHxW, pad right/bottom to be divisible by multiple (e.g., 8)
-    _, _, h, w = x.shape
-    pad_h = (multiple - (h % multiple)) % multiple
-    pad_w = (multiple - (w % multiple)) % multiple
-    if pad_h == 0 and pad_w == 0:
-        return x, 0, 0
-    # Pad order for F.pad is (left, right, top, bottom)
-    xp = F.pad(x, (0, pad_w, 0, pad_h), mode="reflect")
-    return xp, pad_h, pad_w
-
-
-def crop_to_original(x: torch.Tensor, orig_h: int, orig_w: int) -> torch.Tensor:
-    return x[:, :, :orig_h, :orig_w]
 
 
 def load_cfg_model(cfg_path: str, device: torch.device) -> SPFormer:
@@ -88,35 +73,12 @@ def load_weights(model, weight_path: str):
         print("[Warning] Unexpected keys:", unexpected)
 
 
-def enhance_image(
-    model, img_bgr: cv2.Mat, device: torch.device, pad_multiple: int = 8
-) -> cv2.Mat:
-    # Convert BGR uint8 -> RGB float tensor in [0,1]
-    if len(img_bgr.shape) == 2:
-        img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_GRAY2BGR)
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    img_f = img_rgb.astype("float32") / 255.0
-    t = torch.from_numpy(img_f).permute(2, 0, 1).unsqueeze(0).to(device)  # 1x3xHxW
-
-    orig_h, orig_w = t.shape[2], t.shape[3]
-    t, pad_h, pad_w = pad_to_multiple(t, pad_multiple)
-
+def enhance_image(model, img, device: torch.device) -> cv2.Mat:
     with torch.no_grad():
-        out_dict = model(t)
-        out = out_dict["output"].clamp(0.0, 1.0)
+        out_dict = model(img)
+        out = out_dict["output"]
 
-    # Crop back to original size if padded
-    if pad_h != 0 or pad_w != 0:
-        out = crop_to_original(out, orig_h, orig_w)
-
-    out_np = (
-        (out.squeeze(0).permute(1, 2, 0).cpu().numpy() * 255.0)
-        .round()
-        .clip(0, 255)
-        .astype("uint8")
-    )
-    out_bgr = cv2.cvtColor(out_np, cv2.COLOR_RGB2BGR)
-    return out_bgr
+    return out
 
 
 def main():
@@ -136,7 +98,7 @@ def main():
         default="configs/uieb.yaml",
         help="Path to config (model params)",
     )
-    parser.add_argument("--device", type=str, default="cuda", help="cuda or cpu")
+    parser.add_argument("--device", type=str, default="cpu", help="cuda or cpu")
     parser.add_argument(
         "--suffix", type=str, default="_uie", help="Suffix for saved images"
     )
@@ -156,6 +118,14 @@ def main():
     load_weights(model, args.weight)
     model.eval()
 
+    transform = transforms.Compose(
+        [
+            transforms.Resize((256, 256)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        ]
+    )
+
     # Collect images
     paths = list_images(args.input)
     if len(paths) == 0:
@@ -164,17 +134,19 @@ def main():
 
     for path in paths:
         img_name = os.path.basename(path)
-        img = cv2.imread(path, cv2.IMREAD_COLOR)
+        img = Image.open(path).convert("RGB")
         if img is None:
             print(f"[Warning] Failed to read image: {path}")
             continue
 
-        res = enhance_image(model, img, device, pad_multiple=args.pad_multiple)
+        img = transform(img).to(device)
+        img = img.unsqueeze(0)
+        res = enhance_image(model, img, device)
 
         name, ext = os.path.splitext(img_name)
         save_name = f"{name}{args.suffix}{ext}"
         save_path = os.path.join(args.output, save_name)
-        cv2.imwrite(save_path, res)
+        save_img(res[0], save_path)
         print(f"Saved: {save_path}")
 
 
