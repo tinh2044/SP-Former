@@ -2,8 +2,8 @@ data:
   root: "./datasets/LSUI/"
   train_dir: "train"
   test_dir: "test"
-  input_dir: "raw"
-  target_dir: "reference"  
+  input_dir: "input"
+  target_dir: "GT"  
   image_size: 256
   batch_size: 4
   num_workers: 4
