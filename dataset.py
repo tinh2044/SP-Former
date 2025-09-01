@@ -74,7 +74,7 @@ class UIEDataset(data.Dataset):
                 [
                     transforms.Resize((image_size, image_size)),
                     transforms.ToTensor(),
-                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+                    # transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
                 ]
             )
         else:
@@ -82,7 +82,7 @@ class UIEDataset(data.Dataset):
                 [
                     transforms.Resize((image_size, image_size)),
                     transforms.ToTensor(),
-                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+                    # transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
                 ]
             )
 
