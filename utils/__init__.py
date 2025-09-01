@@ -252,15 +252,6 @@ def save_eval_images(inputs, pred, targets, filenames, epoch, output_dir):
         pred_img = pred[i]
         target_img = targets[i]
 
-        # Save individual images
-        input_path = os.path.join(save_dir, f"{filename}_input.png")
-        pred_path = os.path.join(save_dir, f"{filename}_pred.png")
-        target_path = os.path.join(save_dir, f"{filename}_target.png")
-
-        save_img(input_img, input_path)
-        save_img(pred_img, pred_path)
-        save_img(target_img, target_path)
-
         # Save combined image
         combined = torch.cat([input_img, pred_img, target_img], dim=2)
         combined_path = os.path.join(save_dir, f"{filename}_combined.png")

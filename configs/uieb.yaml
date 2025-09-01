@@ -20,8 +20,8 @@ model:
   
   loss_cfg:
     weights:
-      l1: 1.0             
-      perc: 0.01          # Reduced from 0.02 (was causing exploding gradients)
+      l1: 0.5             
+      perc: 0.01          
       ssim: 1.0         # Increased from 0.5
       grad: 0.5            # Increased from 0.1     
 
