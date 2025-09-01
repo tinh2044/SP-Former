@@ -1,28 +1,3 @@
-from .img_util import crop_border, imfrombytes, img2tensor, imwrite, tensor2img
-from .logger import (
-    AvgTimer,
-    MessageLogger,
-    get_env_info,
-    get_root_logger,
-    init_tb_logger,
-    init_wandb_logger,
-)
-
-__all__ = [
-    # img_util.py
-    "img2tensor",
-    "tensor2img",
-    "imfrombytes",
-    "imwrite",
-    "crop_border",
-    # logger.py
-    "MessageLogger",
-    "AvgTimer",
-    "init_tb_logger",
-    "init_wandb_logger",
-    "get_root_logger",
-    "get_env_info",
-]
 import os
 import torch
 import torch.distributed as dist
@@ -33,7 +8,7 @@ from PIL import Image
 def save_img(image_tensor, filename):
     """Save image tensor to file"""
     image_numpy = image_tensor.detach().float().cpu().numpy()
-    image_numpy = (np.transpose(image_numpy, (1, 2, 0)) + 1) / 2.0 * 255.0
+    image_numpy = np.transpose(image_numpy, (1, 2, 0)) * 255.0
     image_numpy = image_numpy.clip(0, 255)
     image_numpy = image_numpy.astype(np.uint8)
     image_pil = Image.fromarray(image_numpy)

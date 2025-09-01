@@ -55,7 +55,7 @@ def get_args_parser():
         help="Path to config file",
     )
 
-    parser.add_argument("--print_freq", default=100, type=int, help="print frequency")
+    parser.add_argument("--print_freq", default=1, type=int, help="print frequency")
     parser.add_argument(
         "--eval_in_train", default=False, type=bool, help="eval in train"
     )
